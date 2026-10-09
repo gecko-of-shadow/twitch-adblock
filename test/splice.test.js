@@ -190,6 +190,7 @@ Deno.test("a stitched break plays through on the same source: spliced, zero relo
     assert(!text.includes("ads.example"), "no ad segment reaches the player");
     assert(!text.includes("stitched-ad"), "no ad marker reaches the player");
     assert(text.includes("https://live.example/seg-" + state.first + ".ts"), "main source kept");
+    if (step > 0) assert(text.includes("https://popout.example/seg-" + (state.first + 3) + ".ts"), "a fresh popout session (same ladder) is the first source");
     if (step > 0) assert(text.includes(".example/seg-" + (state.first + 3) + ".ts") && !text.includes("live.example/seg-" + (state.first + 3) + ".ts"), "the ad slot holds the clean segment for its time");
     state.first += 1;
   }

@@ -1499,6 +1499,12 @@ function createPlaylistGuard(env) {
   // Anything it cannot fill exactly falls through to the backup swap below.
   const spliceTtlMs = 300000;
   const spliceRetryMs = 30000;
+  // A fresh popout session is the main player's own type and rung ladder (the very
+  // same segment bytes), and a brand-new session is usually outside the break the old
+  // one was assigned. TwitchAdSolutions vaft lists popout as a backup for this reason.
+  const spliceTypes = ["popout"].concat(backupTypes);
+  // A source that turned dirty is dropped; a new session is probed soon after.
+  const spliceDirtyRetryMs = 5000;
 
   function withDeadline(promise, ms) {
     let timer;
@@ -1517,7 +1523,7 @@ function createPlaylistGuard(env) {
     if (!session.splicePromise) {
       const masterUrl = session.masterUrl;
       const liveText = session.liveMaster;
-      session.splicePromise = Promise.all(backupTypes.map((playerType) => probeBackupType(channel, masterUrl, liveText, playerType).catch(() => null)))
+      session.splicePromise = Promise.all(spliceTypes.map((playerType) => probeBackupType(channel, masterUrl, liveText, playerType).catch(() => null)))
         .then((results) => {
           const list = rankBackups(results.filter(Boolean));
           session.splice = { at: Date.now(), list };
@@ -1534,6 +1540,7 @@ function createPlaylistGuard(env) {
   async function spliceInPlace(session, channel, url, text) {
     const sources = await spliceSources(session, channel);
     const rung = session.variants.get(url) || null;
+    let sawDirty = false;
     for (const source of sources) {
       const picked = playlist.pickVariant(source.master, rung);
       if (!picked) continue;
@@ -1544,6 +1551,7 @@ function createPlaylistGuard(env) {
       // once keeps the old swap path on its old timing instead of a late start.
       if (playlist.hasAdBreak(body)) {
         trace("splice", "refused " + source.playerType + " dirty");
+        sawDirty = true;
         continue;
       }
       // One memory per main rung, so a quality switch never mixes renditions.
@@ -1565,7 +1573,7 @@ function createPlaylistGuard(env) {
     }
     // Sources went stale or dirty: probe again next time, after a short pause.
     session.splice = null;
-    if (sources.length) session.spliceRetryAt = Date.now() + spliceRetryMs;
+    if (sources.length) session.spliceRetryAt = Date.now() + (sawDirty ? spliceDirtyRetryMs : spliceRetryMs);
     trace("splice", sources.length ? "no-fill" : "no-source");
     return null;
   }
