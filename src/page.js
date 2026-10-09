@@ -1135,6 +1135,7 @@ function createPlaylistGuard(env) {
     session.backupUrls.clear();
     session.tried.clear();
     session.reloadedForBackup = false;
+    session.entryMasterSeen = false;
     session.requestedAds.clear();
     session.mainProbeFails = 0;
     env.status(false);
@@ -1310,7 +1311,23 @@ function createPlaylistGuard(env) {
     });
   }
 
+  // The master the player asks for right after our own entry setSrc belongs to a
+  // brand-new session. That session is often still outside the break for a second or
+  // two, so probing it read "clean", left the backup and armed the false-alarm hold;
+  // the break then reached the new session and played in full (live 2026-10-09, three
+  // of three real breaks). video-swap-new keeps the original session and serves the
+  // backup ladder to that request. Do the same once: the leave check keeps following
+  // the original main media playlist, and real flaps still hit the hold.
+  const entryMasterMs = 10000;
+
   async function runBackup(session, channel, masterUrl, liveText, knownUrl, knownBody) {
+    if (!knownUrl && session.usingBackup && session.reloadedForBackup && session.served
+      && !session.entryMasterSeen && Date.now() - session.backupAt < entryMasterMs) {
+      session.entryMasterSeen = true;
+      trace("playback", "keep-backup entry-master");
+      indexStreamUrls(channel, session.served, masterUrl, true);
+      return session.served;
+    }
     rememberMain(session, channel, masterUrl, liveText);
     if (movingOff(session)) {
       if (!session.usingBackup) env.status(false);
@@ -1384,7 +1401,10 @@ function createPlaylistGuard(env) {
     session.failOpenReloaded = false;
     session.served = playlist.mapVariantsToBackup(liveText, best.master, best.href);
     session.servedCleanUrl = best.cleanUrl || "";
-    if (!session.usingBackup) session.backupAt = Date.now();
+    if (!session.usingBackup) {
+      session.backupAt = Date.now();
+      session.entryMasterSeen = false;
+    }
     session.usingBackup = true;
     session.retryAt = Date.now() + 30000;
     session.tried.clear();

@@ -145,7 +145,7 @@ const master = (url) => ["#EXTM3U", rung, url].join("\n");
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 function harness({ dirtyBackups = false, announcedBackups = false, lowBackups = false } = {}) {
-  const state = { first: 0, ad: false, reloads: 0, statuses: [], gql: 0 };
+  const state = { first: 0, ad: false, reloads: 0, statuses: [], gql: 0, liveMasters: 0 };
   const guard = createPlaylistGuard({
     handoffGraceMs: 0,
     probeDeadlineMs: 200,
@@ -153,12 +153,14 @@ function harness({ dirtyBackups = false, announcedBackups = false, lowBackups = 
       const value = String(url);
       if (value.includes("/channel/hls/")) {
         const type = (value.match(/token=([a-z-]+)/) || [])[1];
+        if (type === "live" && lowBackups && state.liveMasters++ > 0) return playlistResponse(master("https://live.example/fresh.m3u8"));
         if (lowBackups && type !== "live") {
           return playlistResponse(["#EXTM3U", '#EXT-X-STREAM-INF:BANDWIDTH=600000,RESOLUTION=640x360,CODECS="avc1.4D401F",FRAME-RATE=30.000,VIDEO="360p30"', `https://${type}.example/v720.m3u8`].join("\n"));
         }
         return playlistResponse(master(`https://${type}.example/v720.m3u8`));
       }
       const adNow = state.ad ? { adFrom: state.first + 3, adTo: state.first + 40 } : {};
+      if (value.startsWith("https://live.example/fresh")) return playlistResponse(media({ host: "live.example", first: state.first, count: 8 }));
       if (value.startsWith("https://live.example/")) return playlistResponse(media({ host: "live.example", first: state.first, count: 8, upcoming: Boolean(state.upcoming), ...adNow }));
       const host = new URL(value).host;
       if (host.endsWith(".example") && value.endsWith("v720.m3u8")) {
@@ -261,4 +263,27 @@ Deno.test("a clean source on another rung is never spliced: the break goes to th
   assert(!text.includes("ads.example"), "the old swap path still keeps the ad out");
   await flush();
   assertEquals(state.reloads, 1, "a resolution change goes through setSrc, as in v0.1.22");
+});
+
+Deno.test("the master after our own entry reload (a fresh, not-yet-broken session) does not end the swap", async () => {
+  const { guard, state } = harness({ lowBackups: true });
+  const masterUrl = "https://usher.ttvnw.net/api/v2/channel/hls/somechan.m3u8?token=live&sig=x";
+  await (await guard(masterUrl)).text();
+  state.ad = true;
+  await (await guard("https://live.example/v720.m3u8")).text();
+  await flush();
+  assertEquals(state.reloads, 1, "entry swap reloads once");
+  const again = await (await guard(masterUrl)).text();
+  assert(!again.includes("live.example/fresh.m3u8"), "the reload's master is answered with the backup ladder, as video-swap-new does");
+  await flush();
+  assertEquals(state.reloads, 1, "no leave and no false-alarm hold from the fresh session");
+  const backupVariant = again.split("\n").find((line) => line.startsWith("https://"));
+  const onBackup = await (await guard(backupVariant)).text();
+  assert(!onBackup.includes("ads.example"), "the viewer stays on clean backup video while the original main has the ad");
+  await flush();
+  assertEquals(state.reloads, 1);
+  state.ad = false;
+  await (await guard(backupVariant)).text();
+  await flush();
+  assertEquals(state.reloads, 2, "one return reload once the original main is clean");
 });
