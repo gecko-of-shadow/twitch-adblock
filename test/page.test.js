@@ -304,3 +304,10 @@ Deno.test("a page refusal of a worker reload is sent back to that worker", () =>
   assert(source.includes('data.type === "reload-refused"'), "the worker listens for it");
   assert(source.includes("guard.reloadRefused()"), "the worker hands it to its guard");
 });
+
+Deno.test("every refused page reload is reported to the worker, not only a full ceiling", () => {
+  const start = source.indexOf('if (data.type === "reload")');
+  const block = source.slice(start, start + 600);
+  assert(block.includes("if (reloadPlayer() === false) {"), "player-missing and setSrc failures are reported too");
+  assert(!block.includes("!reloadRoom()"), "the report no longer depends on the ceiling");
+});

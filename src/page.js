@@ -225,10 +225,11 @@
       return;
     }
     if (data.type === "reload") {
-      // The worker's own ring is only advisory. Tell it when the page's ring said no,
-      // so it keeps the reload wanted instead of believing the player was reset.
+      // The worker's own ring is only advisory. Tell it whenever the page did not
+      // reset the player (ceiling full, player not found, setSrc threw), so it keeps
+      // the reload wanted instead of believing the player was reset.
       const worker = event.currentTarget;
-      if (reloadPlayer() === false && !reloadRoom()) {
+      if (reloadPlayer() === false) {
         worker.postMessage({ source: "twitch-adblock", type: "reload-refused" });
       }
     }
@@ -1020,6 +1021,11 @@ function createPlaylistGuard(env) {
         liveMaster: "",
         mainVariantUrl: "",
         mainProbeFails: 0,
+        splice: null,
+        splicePromise: null,
+        spliceRetryAt: 0,
+        splicing: false,
+        spliceNote: "",
         seenAt: Date.now(),
       };
       sessions.set(channel, session);
@@ -1487,6 +1493,77 @@ function createPlaylistGuard(env) {
     });
   }
 
+  // In-place splice: stitched ad slots on the main media playlist are filled with
+  // the clean segments another player type lists for the same wall-clock time.
+  // The player keeps its source, buffer and quality rung: no setSrc, no black frame.
+  // Anything it cannot fill exactly falls through to the backup swap below.
+  const spliceTtlMs = 300000;
+  const spliceRetryMs = 30000;
+
+  function withDeadline(promise, ms) {
+    let timer;
+    return Promise.race([
+      promise,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(null), ms);
+      }),
+    ]).finally(() => clearTimeout(timer));
+  }
+
+  async function spliceSources(session, channel) {
+    const now = Date.now();
+    if (session.splice && now - session.splice.at < spliceTtlMs && session.splice.list.length) return session.splice.list;
+    if (now < session.spliceRetryAt) return [];
+    if (!session.splicePromise) {
+      const masterUrl = session.masterUrl;
+      const liveText = session.liveMaster;
+      session.splicePromise = Promise.all(backupTypes.map((playerType) => probeBackupType(channel, masterUrl, liveText, playerType).catch(() => null)))
+        .then((results) => {
+          const list = rankBackups(results.filter(Boolean));
+          session.splice = { at: Date.now(), list };
+          if (!list.length) session.spliceRetryAt = Date.now() + spliceRetryMs;
+          return list;
+        })
+        .finally(() => {
+          session.splicePromise = null;
+        });
+    }
+    return (await withDeadline(session.splicePromise, probeDeadlineMs)) || [];
+  }
+
+  async function spliceInPlace(session, channel, url, text) {
+    const sources = await spliceSources(session, channel);
+    const rung = session.variants.get(url) || null;
+    for (const source of sources) {
+      const picked = playlist.pickVariant(source.master, rung);
+      if (!picked) continue;
+      const cleanUrl = absoluteVariant(picked, source.href);
+      const body = await withDeadline(fetchPlaylist(cleanUrl), probeDeadlineMs);
+      if (!body) continue;
+      // One memory per main rung, so a quality switch never mixes renditions.
+      if (!session.spliceMemory) session.spliceMemory = new Map();
+      if (!session.spliceMemory.has(url)) session.spliceMemory.set(url, new Map());
+      const cleanRung = playlist.listVariants(source.master).find((variant) => absoluteVariant(variant.url, source.href) === cleanUrl) || null;
+      const seamless = Boolean(rung && cleanRung && rung.resolution && cleanRung.resolution === rung.resolution
+        && String(cleanRung.frameRate || "") === String(rung.frameRate || "") && String(cleanRung.video || "") === String(rung.video || ""));
+      const result = playlist.spliceAligned(text, body, cleanUrl, { memory: session.spliceMemory.get(url), seamless });
+      if (!result.ok) {
+        trace("splice", "refused " + source.playerType + " " + result.why);
+        continue;
+      }
+      const note = source.playerType + (seamless ? " same-rung " : " other-rung ") + result.replaced + "/" + result.need + (result.trimmed ? " wait " + result.trimmed : "");
+      if (session.spliceNote !== note) trace("splice", note);
+      session.spliceNote = note;
+      session.splicing = true;
+      return result.text;
+    }
+    // Sources went stale or dirty: probe again next time, after a short pause.
+    session.splice = null;
+    if (sources.length) session.spliceRetryAt = Date.now() + spliceRetryMs;
+    trace("splice", sources.length ? "no-fill" : "no-source");
+    return null;
+  }
+
   async function backupMedia(url, text) {
     const channel = streamByUrl.get(url);
     if (!channel) return null;
@@ -1500,11 +1577,26 @@ function createPlaylistGuard(env) {
       return session.usingBackup ? text : null;
     }
     if (movingOff(session)) return null;
-    if (!playlist.hasAdBreak(text)) return null;
+    if (!playlist.hasAdBreak(text)) {
+      if (session.splicing) {
+        session.splicing = false;
+        session.spliceNote = "";
+        session.spliceMemory = null;
+        trace("splice", "end");
+      }
+      return null;
+    }
     const rung = session.variants.get(url) || null;
     if (!session.usingBackup) {
-      session.adRung = rung;
-      trace("playback", "ad-seen " + playlist.adReason(text) + (rung && rung.resolution ? " " + rung.resolution : ""));
+      if (!session.splicing) {
+        session.adRung = rung;
+        trace("playback", "ad-seen " + playlist.adReason(text) + (rung && rung.resolution ? " " + rung.resolution : ""));
+      }
+      // Fail-open, the reload ceiling and the false-alarm hold stay below as the
+      // safety net; the splice never reloads, so it runs ahead of them.
+      const spliced = await spliceInPlace(session, channel, url, text);
+      if (spliced != null) return spliced;
+      session.splicing = false;
     }
     return await backupMaster(session.masterUrl, session.liveMaster, url, text, async (current, name, mapped) => {
       if (!mapped || !current.usingBackup) return null;

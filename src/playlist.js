@@ -423,6 +423,187 @@ function installTwitchAdblockPlaylist(target) {
     return { text: kept.join("\n"), adUrls: [], stripped: dropped.size > 0 || cleanMarkers, passed };
   }
 
+  // Live segments of a clean playlist keyed by wall clock (PROGRAM-DATE-TIME).
+  function liveSegmentsByTime(text, base) {
+    const lines = linesOf(text);
+    const windows = adWindows(lines);
+    const times = segmentTimes(lines);
+    const found = [];
+    for (let i = 0; i < lines.length - 1; i++) {
+      if (!lines[i].startsWith("#EXTINF")) continue;
+      const next = lines[i + 1].trim();
+      if (!next || next.startsWith("#")) continue;
+      if (isAdSegmentLine(lines, i, windows, times)) continue;
+      const time = times.get(i);
+      if (!Number.isFinite(time)) continue;
+      let url = next;
+      if (base) {
+        try {
+          url = new URL(next, base).href;
+        } catch {
+          url = next;
+        }
+      }
+      found.push({ time, inf: lines[i], url });
+    }
+    return found;
+  }
+
+  // Fill each stitched ad slot of a main media playlist with the clean segment that
+  // covers the same wall-clock time on another player type. Same encoder, same
+  // timeline: the player keeps its buffer and never needs setSrc. One slot, one
+  // segment, so segment numbering never moves. Slots at the live edge that the clean
+  // playlist has not reached yet are left out for this refresh (at most maxTrim);
+  // any other slot without an exact partner refuses the whole splice.
+  function spliceAligned(mainText, cleanText, cleanBase, options) {
+    const opts = options || {};
+    const toleranceMs = opts.toleranceMs == null ? 500 : Number(opts.toleranceMs);
+    const maxTrim = opts.maxTrim == null ? 3 : Number(opts.maxTrim);
+    const lines = linesOf(mainText);
+    const unchanged = lines.join("\n");
+    const refuse = (why) => ({ ok: false, text: unchanged, replaced: 0, trimmed: 0, need: 0, why });
+    const windows = adWindows(lines);
+    const times = segmentTimes(lines);
+    const clean = liveSegmentsByTime(cleanText, cleanBase);
+    if (!clean.length) return refuse("no-clean");
+    const newestClean = clean[clean.length - 1].time;
+
+    const slots = [];
+    for (let i = 0; i < lines.length - 1; i++) {
+      if (!lines[i].startsWith("#EXTINF")) continue;
+      const next = lines[i + 1].trim();
+      if (!next || next.startsWith("#")) continue;
+      slots.push({ index: i, ad: isAdSegmentLine(lines, i, windows, times), time: times.get(i) });
+    }
+    // memory: wall clock -> fill from earlier refreshes. A slot keeps its partner
+    // after the clean playlist has scrolled past it, so the head never goes stale.
+    const memory = opts.memory instanceof Map ? opts.memory : null;
+    const used = new Set();
+    let need = 0;
+    for (const slot of slots) {
+      if (!slot.ad) continue;
+      need += 1;
+      if (!Number.isFinite(slot.time)) return refuse("no-time");
+      const kept = memory ? memory.get(slot.time) : null;
+      if (kept && !used.has(kept.url)) {
+        used.add(kept.url);
+        slot.fill = kept;
+        continue;
+      }
+      let best = null;
+      for (const item of clean) {
+        if (used.has(item.url)) continue;
+        const gap = Math.abs(item.time - slot.time);
+        if (gap <= toleranceMs && (!best || gap < Math.abs(best.time - slot.time))) best = item;
+      }
+      if (best) {
+        used.add(best.url);
+        slot.fill = best;
+      } else if (slot.time > newestClean) {
+        slot.trim = true;
+      } else {
+        return refuse("gap");
+      }
+    }
+    // Only a tail of unfilled slots may wait for the next refresh.
+    let tail = slots.length;
+    while (tail > 0 && slots[tail - 1].trim) tail -= 1;
+    const trimmed = slots.length - tail;
+    if (slots.slice(0, tail).some((slot) => slot.trim)) return refuse("gap");
+    if (trimmed > maxTrim) return refuse("behind");
+    if (tail === 0) return refuse("empty");
+
+    if (memory) {
+      for (const slot of slots) if (slot.fill) memory.set(slot.time, slot.fill);
+      const oldest = slots.length && Number.isFinite(slots[0].time) ? slots[0].time : NaN;
+      for (const time of [...memory.keys()]) if (Number.isFinite(oldest) && time < oldest - 60000) memory.delete(time);
+    }
+    const bySlot = new Map(slots.map((slot) => [slot.index, slot]));
+    const cutAt = tail < slots.length ? slots[tail].index : lines.length;
+    const out = [];
+    let held = [];
+    let lastWasFill = null;
+    let prevEnd = NaN;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.startsWith("#EXT-X-TWITCH-PREFETCH:")) continue;
+      if (line.startsWith("#EXT-X-CUE-OUT") || line.startsWith("#EXT-X-CUE-IN")) continue;
+      if (line.startsWith("#EXT-X-DATERANGE:") && hasStitchedAd(line) && !line.includes('CLASS="twitch-trigger"')) continue;
+      // Per-ad tracking ranges (quartiles, the creative as stream source) go with it.
+      if (line.startsWith("#EXT-X-DATERANGE:") && (line.includes('CLASS="twitch-ad-quartile"')
+        || (line.includes('CLASS="twitch-stream-source"') && !line.includes('X-TV-TWITCH-STREAM-SOURCE="live"')))) continue;
+      if (i >= cutAt) {
+        // Header-free tail: keep only end-of-list tags.
+        if (line.startsWith("#EXT-X-ENDLIST")) out.push(line);
+        continue;
+      }
+      // Every tag between two segments belongs to the next one.
+      if (line.startsWith("#") && !line.startsWith("#EXTINF")) {
+        held.push(line);
+        continue;
+      }
+      const slot = bySlot.get(i);
+      if (slot) {
+        const isFill = Boolean(slot.fill);
+        const start = isFill ? slot.fill.time : slot.time;
+        // seamless: the clean rung is the same rendition (Twitch serves the very same
+        // segment bytes to every player type), so where main and clean meet end to
+        // end it is one timeline and a discontinuity would only make the player flush
+        // and pause. Where they do not meet (the live cut after a break moves by the
+        // ad's odd tail), main's own discontinuity stays.
+        // The head slot's predecessor has scrolled out; a fill there met it on the
+        // 2 s grid when it was still listed, so it keeps the same answer as before.
+        const meets = lastWasFill === null
+          ? isFill
+          : Number.isFinite(prevEnd) && Number.isFinite(start) && Math.abs(start - prevEnd) <= 50;
+        if (opts.seamless && meets && (isFill || lastWasFill === true)) held = held.filter((tag) => tag.trim() !== "#EXT-X-DISCONTINUITY");
+        const hasBreak = held.some((tag) => tag.trim() === "#EXT-X-DISCONTINUITY");
+        // A new timeline starts wherever the source switches between main and clean.
+        if ((!opts.seamless || !meets) && lastWasFill !== null && lastWasFill !== isFill && !hasBreak) held.unshift("#EXT-X-DISCONTINUITY");
+        lastWasFill = isFill;
+        const inf = isFill ? slot.fill.inf : line;
+        const seconds = Number(inf.slice("#EXTINF:".length).split(",")[0]);
+        prevEnd = Number.isFinite(start) && Number.isFinite(seconds) ? start + Math.round(seconds * 1000) : NaN;
+        if (isFill) {
+          const isBreak = (tag) => tag.trim() === "#EXT-X-DISCONTINUITY";
+          const isTime = (tag) => tag.startsWith("#EXT-X-PROGRAM-DATE-TIME:");
+          out.push(...held.filter((tag) => !isBreak(tag) && !isTime(tag)));
+          out.push(...held.filter(isBreak).slice(0, 1));
+          out.push(`#EXT-X-PROGRAM-DATE-TIME:${new Date(slot.fill.time).toISOString()}`);
+          out.push(slot.fill.inf.includes(",live") ? slot.fill.inf : slot.fill.inf.replace(/,.*$/, ",live"));
+          out.push(slot.fill.url);
+          held = [];
+          i += 1;
+          continue;
+        }
+      }
+      out.push(...held, line);
+      held = [];
+    }
+    if (cutAt === lines.length) out.push(...held);
+    // Low-latency prefetch lines are the player's lead over the live edge; dropping
+    // them all drains its buffer. Keep main's own when its edge is live, else take
+    // the clean edge's when it is the same rendition at the same wall clock.
+    const lastKept = slots[tail - 1];
+    const mainPrefetch = lines.filter((line) => line.startsWith("#EXT-X-TWITCH-PREFETCH:"));
+    if (trimmed === 0 && !lastKept.ad && !hasUpcomingAd(windows, times)) {
+      out.push(...mainPrefetch);
+    } else if (opts.seamless && Number.isFinite(lastKept.time) && Math.abs(lastKept.time - newestClean) <= toleranceMs) {
+      for (const line of linesOf(cleanText)) {
+        if (!line.startsWith("#EXT-X-TWITCH-PREFETCH:")) continue;
+        let target = line.slice("#EXT-X-TWITCH-PREFETCH:".length).trim();
+        try {
+          target = new URL(target, cleanBase || undefined).href;
+        } catch {
+          // keep as listed
+        }
+        out.push("#EXT-X-TWITCH-PREFETCH:" + target);
+      }
+    }
+    const replaced = slots.filter((slot) => slot.fill).length;
+    return { ok: true, text: out.join("\n"), replaced, trimmed, need, why: "" };
+  }
+
   function mpegCrc32(bytes) {
     let crc = 0xffffffff;
     for (let i = 0; i < bytes.length; i++) {
@@ -515,6 +696,8 @@ function installTwitchAdblockPlaylist(target) {
     mapVariantsToBackup,
     createStripLedger,
     stripAds,
+    liveSegmentsByTime,
+    spliceAligned,
     firstAdSegmentUrl,
     blankSegmentBytes,
   });
