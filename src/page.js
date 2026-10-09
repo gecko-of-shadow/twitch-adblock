@@ -1540,6 +1540,12 @@ function createPlaylistGuard(env) {
       const cleanUrl = absoluteVariant(picked, source.href);
       const body = await withDeadline(fetchPlaylist(cleanUrl), probeDeadlineMs);
       if (!body) continue;
+      // A source with its own ad (even one only announced) is not clean. Refusing at
+      // once keeps the old swap path on its old timing instead of a late start.
+      if (playlist.hasAdBreak(body)) {
+        trace("splice", "refused " + source.playerType + " dirty");
+        continue;
+      }
       // One memory per main rung, so a quality switch never mixes renditions.
       if (!session.spliceMemory) session.spliceMemory = new Map();
       if (!session.spliceMemory.has(url)) session.spliceMemory.set(url, new Map());

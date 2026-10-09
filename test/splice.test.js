@@ -144,7 +144,7 @@ const rung = '#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720,CODECS="av
 const master = (url) => ["#EXTM3U", rung, url].join("\n");
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-function harness({ dirtyBackups = false } = {}) {
+function harness({ dirtyBackups = false, announcedBackups = false } = {}) {
   const state = { first: 0, ad: false, reloads: 0, statuses: [], gql: 0 };
   const guard = createPlaylistGuard({
     handoffGraceMs: 0,
@@ -156,10 +156,10 @@ function harness({ dirtyBackups = false } = {}) {
         return playlistResponse(master(`https://${type}.example/v720.m3u8`));
       }
       const adNow = state.ad ? { adFrom: state.first + 3, adTo: state.first + 40 } : {};
-      if (value.startsWith("https://live.example/")) return playlistResponse(media({ host: "live.example", first: state.first, count: 8, ...adNow }));
+      if (value.startsWith("https://live.example/")) return playlistResponse(media({ host: "live.example", first: state.first, count: 8, upcoming: Boolean(state.upcoming), ...adNow }));
       const host = new URL(value).host;
       if (host.endsWith(".example") && value.endsWith("v720.m3u8")) {
-        return playlistResponse(media({ host, first: state.first, count: 8, ...(dirtyBackups ? adNow : {}) }));
+        return playlistResponse(media({ host, first: state.first, count: 8, upcoming: announcedBackups && state.upcoming, ...(dirtyBackups ? adNow : {}) }));
       }
       return new Response("missing", { status: 404 });
     },
@@ -232,4 +232,18 @@ Deno.test("a real captured stitched break (redacted) is filled and its odd tail 
   assert(!playlist.hasAdBreak(result.text), "player sees a plain live playlist");
   assertEquals(result.text.split("\n").filter((line) => line === "#EXT-X-DISCONTINUITY").length, 1, "only where the live cut really moved (.234 -> .501)");
   assertEquals(segs(result.text).length, segs(realEnd).length, "one for one");
+});
+
+Deno.test("a source that already announces its own break is not used to splice", async () => {
+  const { guard, state } = harness({ announcedBackups: true });
+  await (await guard("https://usher.ttvnw.net/api/v2/channel/hls/somechan.m3u8?token=live&sig=x")).text();
+  const variant = "https://live.example/v720.m3u8";
+  state.upcoming = true;
+  const text = await (await guard(variant)).text();
+  assert(!text.includes("embed.example/pf-") && !text.includes("autoplay.example/pf-"), "no prefetch borrowed from an announced source");
+  const clean = harness({});
+  await (await clean.guard("https://usher.ttvnw.net/api/v2/channel/hls/somechan.m3u8?token=live&sig=x")).text();
+  clean.state.upcoming = true;
+  const spliced = await (await clean.guard(variant)).text();
+  assert(!spliced.includes("stitched-ad") && spliced.includes(".example/pf-8.ts"), "a clean source is spliced at the announcement");
 });
