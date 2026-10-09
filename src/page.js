@@ -1560,12 +1560,19 @@ function createPlaylistGuard(env) {
       const cleanRung = playlist.listVariants(source.master).find((variant) => absoluteVariant(variant.url, source.href) === cleanUrl) || null;
       const seamless = Boolean(rung && cleanRung && rung.resolution && cleanRung.resolution === rung.resolution
         && String(cleanRung.frameRate || "") === String(rung.frameRate || "") && String(cleanRung.video || "") === String(rung.video || ""));
+      // Only the same rendition is spliced. Another rung changes resolution and
+      // timestamps under a live player without setSrc; live (2026-10-09) that froze
+      // the player for good. Those breaks go to the backup swap below instead.
+      if (!seamless) {
+        trace("splice", "refused " + source.playerType + " other-rung");
+        continue;
+      }
       const result = playlist.spliceAligned(text, body, cleanUrl, { memory: session.spliceMemory.get(url), seamless });
       if (!result.ok) {
         trace("splice", "refused " + source.playerType + " " + result.why);
         continue;
       }
-      const note = source.playerType + (seamless ? " same-rung " : " other-rung ") + result.replaced + "/" + result.need + (result.trimmed ? " wait " + result.trimmed : "");
+      const note = source.playerType + " " + result.replaced + "/" + result.need + (result.trimmed ? " wait " + result.trimmed : "");
       if (session.spliceNote !== note) trace("splice", note);
       session.spliceNote = note;
       session.splicing = true;

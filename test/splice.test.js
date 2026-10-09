@@ -144,7 +144,7 @@ const rung = '#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720,CODECS="av
 const master = (url) => ["#EXTM3U", rung, url].join("\n");
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-function harness({ dirtyBackups = false, announcedBackups = false } = {}) {
+function harness({ dirtyBackups = false, announcedBackups = false, lowBackups = false } = {}) {
   const state = { first: 0, ad: false, reloads: 0, statuses: [], gql: 0 };
   const guard = createPlaylistGuard({
     handoffGraceMs: 0,
@@ -153,6 +153,9 @@ function harness({ dirtyBackups = false, announcedBackups = false } = {}) {
       const value = String(url);
       if (value.includes("/channel/hls/")) {
         const type = (value.match(/token=([a-z-]+)/) || [])[1];
+        if (lowBackups && type !== "live") {
+          return playlistResponse(["#EXTM3U", '#EXT-X-STREAM-INF:BANDWIDTH=600000,RESOLUTION=640x360,CODECS="avc1.4D401F",FRAME-RATE=30.000,VIDEO="360p30"', `https://${type}.example/v720.m3u8`].join("\n"));
+        }
         return playlistResponse(master(`https://${type}.example/v720.m3u8`));
       }
       const adNow = state.ad ? { adFrom: state.first + 3, adTo: state.first + 40 } : {};
@@ -247,4 +250,15 @@ Deno.test("a source that already announces its own break is not used to splice",
   clean.state.upcoming = true;
   const spliced = await (await clean.guard(variant)).text();
   assert(!spliced.includes("stitched-ad") && spliced.includes(".example/pf-8.ts"), "a clean source is spliced at the announcement");
+});
+
+Deno.test("a clean source on another rung is never spliced: the break goes to the reload swap", async () => {
+  const { guard, state } = harness({ lowBackups: true });
+  await (await guard("https://usher.ttvnw.net/api/v2/channel/hls/somechan.m3u8?token=live&sig=x")).text();
+  state.ad = true;
+  const text = await (await guard("https://live.example/v720.m3u8")).text();
+  assert(!text.includes("live.example/seg-3.ts") || !text.includes("#EXT-X-DISCONTINUITY\n#EXT-X-PROGRAM-DATE-TIME"), "no other-rung splice");
+  assert(!text.includes("ads.example"), "the old swap path still keeps the ad out");
+  await flush();
+  assertEquals(state.reloads, 1, "a resolution change goes through setSrc, as in v0.1.22");
 });
