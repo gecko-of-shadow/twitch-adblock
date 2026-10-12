@@ -1,145 +1,79 @@
-# Efficiency check — 2026-10-11 (v0.2.3)
+# Efficiency check — twitch-adblock 0.2.12
 
-Reference notes from a code review and micro-benchmark session on the runtime
-scripts shipped in this repo. Nothing in the extension was changed as part of
-this check. Numbers come from Node 22 on a 4-core VM running the pure functions
-from `src/youtube.js` and the top-level helpers extracted from
-`src/vendor/video-swap-new.user.js` against synthetic payloads sized like real
-YouTube/Twitch responses. Browser-only parts (DOM observers, Worker lifecycle)
-were assessed by reading the code.
+Measured 2026-10-11 against beta tip `5b9ac39` (tag `v0.2.12`) in headless Chrome 154.0.8037.92. The extension was loaded unpacked. Pages were local fixtures served over HTTPS so the real content scripts ran (`cosmetic.js`, directory hide, YouTube `JSON.parse` hook). This was not a live Twitch or YouTube session.
 
-Scope asked for: load times, drag on the system, memory leaks, hangs.
+## Result
 
-## Summary
+Pages stayed responsive. Nothing hung, and nothing leaked across reloads or tab close. The standing cost is about **125 MB** of Chrome memory and one extra process. The only main-thread tax that shows up is the YouTube response walk: a **1.2 MB** ad-bearing payload peaked at **29 ms**. Ordinary sites pick up the cosmetic stylesheet in about **20 ms**.
 
-| Area | Verdict |
-| --- | --- |
-| Script compile / injection cost | Negligible (all four scripts < 0.4 ms each). |
-| YouTube page-load stall | Real. `stripValue` on `ytInitialData` blocks the main thread 50–130 ms for 1–3 MB payloads. |
-| YouTube steady-state CPU | Every `JSON.parse` and every youtubei response is scanned; ~2× native parse cost when clean, ~11× when a marker is present. |
-| Twitch player creation | Synchronous XHR in `getWasmWorkerJs` blocks the main thread (upstream, unmodified). |
-| Memory leaks (pure paths) | None found. Caches are bounded or per-request. |
-| Memory leaks (Twitch page) | `twitchWorkers` array never releases old Workers (upstream, unmodified). |
-| Hangs | None. All hooks fail open; cyclic/deep/wide inputs stay bounded. |
+## Load time
 
-## Load times
+| Surface | Without extension | With 0.2.12 |
+|---|---|---|
+| Ordinary page, DOMContentLoaded | 12 ms | 14 ms |
+| Ordinary page, load | 13 ms | 16 ms |
+| Cosmetic stylesheet applied (63,872 chars) | — | 20 ms |
+| 12 iframes, each with the stylesheet | — | 100 ms for all 13 documents |
+| Twitch directory fixture, DOMContentLoaded | 10 ms | 21 ms |
+| Service worker visible after load | — | 195 ms |
+| Ruleset `general` enabled | — | yes, 0 dynamic allows |
+| V8 compile of each script | — | 0.1–0.5 ms |
+| Parse of `general-network.json` (2.2 MB, 1,251 rules) | — | 9 ms, 4.6 MB retained in V8 |
 
-- Compile cost per page (`document_start`, main world): `debug.js` 7 KB / 0.06 ms,
-  `youtube.js` 32 KB / 0.28 ms, `video-swap-new.user.js` 50 KB / 0.37 ms,
-  `debug-bridge.js` 1 KB / 0.03 ms. The Twitch script is injected into every
-  twitch.tv frame (`all_frames: true`); each copy starts its own 1 s timer.
-- **YouTube Home load stall.** `hookInitial` intercepts the `ytInitialData`
-  setter and runs `stripValue` synchronously. `stripValue` deep-clones via
-  `JSON.stringify` + `JSON.parse`, then walks every node.
+Cosmetic CSS is 4,004 selectors, almost all IDs. It has no `:has()`, no universal selector, and 3 attribute selectors. That is why a 1,500-node page does not stall when it lands.
 
-  | Payload | `stripValue` | native `JSON.parse` | ratio | transient heap |
-  | --- | --- | --- | --- | --- |
-  | 0.4 MB | 20 ms | 2.9 ms | 6.7× | ~16 MB |
-  | 1.1 MB | 51 ms | 6.2 ms | 8.2× | ~30 MB |
-  | 3.0 MB | 132 ms | 17.2 ms | 7.7× | ~78 MB |
-
-  Real Home `ytInitialData` is typically 1–3 MB. The same cost applies to each
-  infinite-scroll `browse` continuation that contains a Sponsored card.
-- **Twitch player creation.** `getWasmWorkerJs` does
-  `req.open('GET', twitchBlobUrl, false)` — a synchronous XHR on the main thread
-  — every time a Worker is constructed (initial load, each ad swap in/out,
-  quality change, raid). Upstream behaviour in pixeltris v1.55.
+YouTube's home-feed hide rule uses 10 `:has()` selectors. Those run only on YouTube. This fixture's DOM was too small to time them on their own.
 
 ## Drag on the system
 
-### YouTube (`src/youtube.js`)
+Idle Chrome RSS was **1,083 MB** without the extension and **1,208 MB** with it (**+125 MB**, **+1 process**). The gap stayed in the same band after a page open, 12 iframes, and six reloads (about 115–130 MB). It did not climb.
 
-- **Global `JSON.parse` hook.** `textLooksLikeAds` runs up to 20 `String.includes`
-  scans over the full text before deciding anything. Clean 0.8 MB browse text:
-  4.25 ms per call with no early exit. Hooked parse vs native: 8.4 ms vs 4.4 ms
-  when clean (~2×); 46.6 ms vs 4.2 ms when a marker is present (~11×, because
-  the clone + walk runs).
-- **False-positive trigger.** Markers include plain `"isAd":true`,
-  `"adSlots"`, etc. A 1.2 MB comments payload where a user typed `"isAd":true`
-  in a comment triggered the full clone + walk (9 ms). Any marker string inside
-  user content pays the full cost.
-- **Double buffering.** The fetch hook calls `response.clone().text()` for
-  every OK youtubei response, so each body exists twice in memory and YouTube
-  cannot consume it until the whole body has arrived.
-- **SABR/UMP stream.** Every googlevideo byte is copied once through the
-  `TransformStream` (64 MB in 32 ms, roughly one memcpy — fine). The XHR
-  `response` getter has no cache: each read re-parses and re-copies the whole
-  ArrayBuffer (16 MB: 8.5 ms per read; 5 reads → 32 ms). Only matters if the
-  player reads `response` more than once.
-- **DOM observer.** A `MutationObserver` on the whole `documentElement` subtree
-  runs `querySelectorAll` with 11 selectors on every animation frame in which a
-  mutation occurred, on `/watch` and `/shorts`. YouTube mutates the DOM
-  continuously during playback (progress bar, live chat, comments), so this
-  fires several times per second. Not measured (no DOM in the harness);
-  expected sub-millisecond per run but continuous.
+Main thread, same fixture with and without the extension:
 
-### Twitch (`src/vendor/video-swap-new.user.js`)
+| Work | Without | With | What it means |
+|---|---|---|---|
+| YouTube `JSON.parse`, 1.16 MB, no ad markers, 3 runs | 2.4–3.1 ms | 8.0–8.9 ms | Hook scans the text. About +6 ms. |
+| YouTube `JSON.parse`, 1.16 MB, ads present, 3 runs | 2.1–2.8 ms | 17.2 / 29.1 / 17.2 ms | Clone and walk. Peak **29 ms**. No 50 ms long task. |
+| YouTube `JSON.parse`, 294 KB, ads present | 0.6 ms mean | 8.8 ms mean, max 11.5 ms | Same path, smaller body. |
+| Twitch directory, 12,000 cards, 25 mutation bursts | steady ~4.2 ms, one 80 ms first layout | steady ~4.2 ms, one 68 ms first layout | Directory script was live: banner `display` became `none`, hide stylesheet present. The full-document observer did not add time. |
+| Smaller directory, 1,800 cards, 40 bursts | mean 3.8 ms, max 11.4 ms, 0 long tasks | mean 4.0 ms, max 11.4 ms, 0 long tasks | Same. |
+| React-tree walk model, 21,845 fibers (video-swap's uncached player search) | — | mean 0.2 ms, max 0.7 ms | The 1-second live monitor is this walk. Cheap at this size. |
+| DNR block of `101com.com`, 20 fetches | fail in 141 ms mean (network) | fail in **0.6 ms** mean, max 2.2 ms | Block list is faster than a dead connection. |
+| Allowed request to the local server | 1.2 ms mean | 1.3 ms mean | Allowed traffic is unchanged. |
 
-- **1 s poll.** `monitorLiveStatus` reruns `getPlayerAndState` every second
-  until a live player is found: two full React fiber walks, 0.34 ms on a
-  10k-node tree, 0.95 ms on 40k nodes. On directory / following / offline
-  channel tabs this runs for the life of the tab. CPU < 0.1%, but it keeps the
-  tab's timer wheel active.
-- **Network overhead during ad breaks (by design).** While on backup
-  encodings, each media-playlist refresh (~every 2 s) also fetches the main
-  playlist to detect the end of the break and fetches one ad `.ts` segment per
-  playlist. Roughly +1 request and up to ~0.5 MB/s extra download for the
-  duration of a break.
-- m3u8 processing itself is cheap: `stripAdSegments` 0.09 ms per 63-segment
-  playlist, `setStreamInfoUrls` 0.02 ms, `getStreamUrlForResolution` 0.01 ms.
+Rules are `requestDomains` only: 99,745 domain entries, 80 per rule, **zero** `regexFilter` and **zero** `urlFilter`. Matching stays on Chrome's domain path.
+
+A 294 KB bench that parsed 26 bodies back-to-back in one turn produced a single **105 ms** long task. Split apart, each parse stays in the times above. One real player response is one parse.
 
 ## Memory leaks
 
-- **Pure paths: none.** 2000 simulated youtubei responses through
-  `stripResponseText` plus 2000 UMP parser instances retained 0.05 MB after GC.
-  `AdSegmentCache` is swept on every call and stays bounded by its 2-minute TTL
-  (checked with 7200 unique ad URLs). `retryTimers` / `hideTimer` are cleared;
-  per-XHR caches die with the XHR; the debug ring buffer is capped at 80.
-- **`twitchWorkers` (page scope, upstream).** `twitchWorkers.push(this)` on
-  every Worker construction, with no splice/remove anywhere. Every player
-  reload creates a new Worker and the old one, plus its two message-listener
-  closures, stays referenced until the tab closes. `postTwitchWorkerMessage`
-  also posts to all of them. Slow but unbounded growth.
-- **`StreamInfos` / `StreamInfosByUrl` (worker scope).** Per-channel entries
-  are never evicted (300 channels → 300 entries with cached playlists). They
-  live inside the worker and are reclaimed when it terminates; a long-lived
-  worker across many SPA channel navigations accumulates them. Minor.
+Ordinary-page JavaScript heap after garbage collection:
+
+- Without extension, six reloads: **456,660 bytes** every time.
+- With extension, six reloads: **809,348 → 811,396 → 809,348 → 809,348 → 811,396 → 809,348**. Flat. The extra ~350 KB is the page plus the 64 KB stylesheet (`backingStorageSize` 71,042).
+
+Process RSS after those reloads did not rise above the single-page cost. Closing the worker-test tab returned RSS to the pre-tab level on both sides (within 2 MB).
+
+Eight Twitch-origin `Worker`s were constructed and then dropped:
+
+- The video-swap hook was installed (`Worker` was no longer the native function).
+- Process count went up by 1 for the tab, then back down when the tab closed. Same shape with the extension off.
+- Those fixture workers exited. This run did not keep eight live threads.
+
+The vendor script still pushes every wrapped worker onto `twitchWorkers` and never removes it, and it never revokes the blob URL. `AdSegmentCache` does expire entries after 120 seconds. That worker array is the retain to remember if a real Twitch worker stays alive after the page drops it. It did not show up as leftover RSS here. `video-swap-new.user.js` is the upstream file the gate keeps aligned with `main`; this check did not edit it.
 
 ## Hangs
 
-- No unbounded loops or waits. `stripValue` uses a `WeakSet` seen-set; a cyclic
-  object fails open in 0.06 ms; 5000-deep nesting completes in 5.9 ms. The UMP
-  parser bounds its buffering (type-35 parts ≤ 64 KB, otherwise skip-through)
-  and flips to passthrough on an invalid header; a pathological 3-byte-chunk
-  stream (2.8 M pushes for 8 MB) took 335 ms but stayed bounded.
-- The two genuine main-thread blockers are the ones above: the synchronous
-  worker-blob XHR on Twitch and the 50–130 ms `stripValue` stall on large
-  YouTube payloads. A 200k-element array walk took 192 ms, so unusually large
-  YouTube continuations can produce a visible frame hitch.
-- All hook paths are wrapped in try/catch and fail open, so an exception
-  degrades to "ads show" rather than a frozen player.
+No busy-wait and no stuck load turned up.
 
-## Priority list (not implemented)
+- Partial UMP input returns in 0.3 ms. The parser's read loop stops when it needs more bytes.
+- A 2,000-deep ad JSON walks in 8 ms and strips. An 8,000-deep JSON throws `RangeError` in 6 ms. The page hook catches that and leaves the original value. It does not spin.
+- Directory and YouTube observers did not push a mutation burst over the 50 ms long-task line. YouTube's observer is already tied to one animation frame. The directory observer is not; on this 12,000-node DOM that still cost nothing measurable.
+- Kick's cover observer is coalesced to one frame and only reacts to added iframes, video, and ad controls. It was not given its own timing pass.
+- Debug's banner observer watches the whole Twitch tree, including attributes, and only while debug is on. Default is off. That mode was not timed.
 
-1. `youtube.js` `stripValue`: avoid the stringify/parse deep clone (strip in
-   place along the matched path, or clone only subtrees that actually contain
-   ad nodes). Largest CPU and GC cost; source of the Home-page load stall.
-2. `youtube.js` `JSON.parse` hook: collapse `textLooksLikeAds` into a single
-   regex pass and/or restrict markers to the current `kind`; avoid rescanning
-   text the fetch/XHR hooks already stripped.
-3. `youtube.js` SABR XHR getter: cache the patched buffer per `xhr.__ytGen`.
-4. `video-swap-new.user.js`: `twitchWorkers` retention and the synchronous XHR
-   are upstream (pixeltris v1.55). The README commits to shipping the vendor
-   file unmodified, so these are upstream reports rather than local patches.
+The known black start on some YouTube titles is the player waiting on media (`readyState` 0). The nudge only runs once `readyState` is at least 2, so that stall is not a main-thread spin in this extension.
 
-## Method
+## What this does not cover
 
-- Payloads: synthetic YouTube `browse` responses of 500–4000 rich-grid cards
-  with ~1% `adSlotRenderer` cards; synthetic `player` response with 24 adaptive
-  formats and 3 `adPlacements`; a 64 MB synthetic UMP stream with 1 MB media
-  parts; Twitch playlists from `test/fixtures/` plus a generated 63-segment
-  live playlist with 3 stitched-ad segments.
-- Each figure is the mean over 5–200k iterations after a forced GC, with heap
-  delta read from `process.memoryUsage().heapUsed`.
-- The harness was throwaway and is not in the repo; the figures above are the
-  record.
+Live `twitch.tv` / `youtube.com` pages, shadow DOM, and a real multi-megabyte browse response. A 3 MB ad-bearing JSON body would scale past the 29 ms measured at 1.2 MB and could cross into one long task. The directory observer is still uncoalesced; a heavier live directory than 12,000 plain nodes could show up even though this fixture did not.
