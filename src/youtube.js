@@ -3,7 +3,9 @@
 // are stripped from browse JSON and hidden with CSS. Nothing here
 // replaces the picture with a blank frame. A SABR next-request policy
 // can still hold that player on a black loading spinner for the ad-length
-// backoff (often 10 seconds) after a click; that delay is cleared below.
+// backoff (often 10 seconds) after a click. The same wait is in the first
+// /initplayback response and in the start-buffer policy. Both are cleared
+// below, and player requests ask YouTube not to schedule the slot.
 function installYoutubeAdblock(target) {
   const nativeJSONParse = JSON.parse;
   const PLAYER_AD_FIELDS = ["adPlacements", "playerAds", "adSlots", "adBreakHeartbeatParams", "adBreakParams"];
@@ -25,6 +27,7 @@ function installYoutubeAdblock(target) {
     "brandVideoShelfRenderer",
     "brandVideoSingletonRenderer",
     "statementBannerRenderer",
+    "searchPyvRenderer",
   ];
   const DOM_AD_SELECTORS = [
     ".ytp-ad-overlay-container",
@@ -60,6 +63,7 @@ function installYoutubeAdblock(target) {
     "ytd-statement-banner-renderer",
     "ytm-promoted-sparkles-web-renderer",
     "ytm-ad-slot-renderer",
+    "ytd-search-pyv-renderer",
   ].join(",");
 
   function kindFor(url) {
@@ -77,7 +81,7 @@ function installYoutubeAdblock(target) {
     if (path.includes("/youtubei/v1/player") || path.includes("/youtubei/v1/get_midroll")) return "player";
     if (path.includes("/youtubei/v1/reel/")) return "reel";
     if (path.includes("/youtubei/v1/next") || path.includes("/youtubei/v1/get_watch")) return "watch";
-    if (path.includes("/youtubei/v1/browse")) return "browse";
+    if (path.includes("/youtubei/v1/browse") || path.includes("/youtubei/v1/search")) return "browse";
     return "";
   }
 
@@ -100,6 +104,7 @@ function installYoutubeAdblock(target) {
       || source.includes('"brandVideoShelfRenderer"')
       || source.includes('"brandVideoSingletonRenderer"')
       || source.includes('"statementBannerRenderer"')
+      || source.includes('"searchPyvRenderer"')
       || source.includes("REEL_VIDEO_TYPE_AD")
       || source.includes('"isAd":true')
       || source.includes('"isAd": true');
@@ -184,6 +189,71 @@ function installYoutubeAdblock(target) {
     return false;
   }
 
+  // The player will not show the first picture until minReadaheadMs of media
+  // is buffered. That wait lives on the start and resume policies, including
+  // when those policies are arrays. Zeroing it leaves the bandwidth floor and
+  // the video urls alone. The server start switch is turned off so a leftover
+  // policy cannot put the wait back. Server ABR stays on: a video that has
+  // only a SABR url would otherwise have nothing left to play.
+  function zeroPolicyList(list) {
+    const items = Array.isArray(list) ? list : list && typeof list === "object" ? [list] : null;
+    if (!items) return false;
+    let changed = false;
+    for (const item of items) {
+      if (Array.isArray(item)) {
+        if (zeroPolicyList(item)) changed = true;
+        continue;
+      }
+      if (!item || typeof item !== "object") continue;
+      if (typeof item.minReadaheadMs === "number" && item.minReadaheadMs !== 0) {
+        item.minReadaheadMs = 0;
+        changed = true;
+      }
+      if (item.startMinReadaheadPolicy && item.startMinReadaheadPolicy !== list && zeroPolicyList(item.startMinReadaheadPolicy)) {
+        changed = true;
+      }
+      if (item.resumeMinReadaheadPolicy && item.resumeMinReadaheadPolicy !== list && zeroPolicyList(item.resumeMinReadaheadPolicy)) {
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  function zeroStartPolicies(node) {
+    if (!node || typeof node !== "object") return false;
+    if (Array.isArray(node)) return zeroPolicyList(node);
+    let changed = false;
+    if (zeroPolicyList(node.startMinReadaheadPolicy)) changed = true;
+    if (zeroPolicyList(node.resumeMinReadaheadPolicy)) changed = true;
+    if (typeof node.minReadaheadMs === "number" && node.minReadaheadMs !== 0) {
+      node.minReadaheadMs = 0;
+      changed = true;
+    }
+    const policy = node.playbackStartPolicy;
+    if (policy && typeof policy === "object" && policy !== node && zeroStartPolicies(policy)) changed = true;
+    const start = node.serverPlaybackStartConfig;
+    if (start && typeof start === "object" && !Array.isArray(start)) {
+      if (Object.prototype.hasOwnProperty.call(start, "enable") && start.enable !== false) {
+        start.enable = false;
+        changed = true;
+      }
+      if (start !== node && zeroStartPolicies(start)) changed = true;
+    }
+    if (Object.prototype.hasOwnProperty.call(node, "enable") && node.playbackStartPolicy && node.enable !== false) {
+      node.enable = false;
+      changed = true;
+    }
+    return changed;
+  }
+
+  function textHasStartHold(text) {
+    const source = String(text || "");
+    return source.includes("startMinReadaheadPolicy")
+      || source.includes("resumeMinReadaheadPolicy")
+      || source.includes("serverPlaybackStartConfig")
+      || source.includes('"minReadaheadMs"');
+  }
+
   function stripValue(value, kind) {
     let copy;
     try {
@@ -227,6 +297,7 @@ function installYoutubeAdblock(target) {
           blocked = true;
         }
       }
+      if (zeroStartPolicies(node)) blocked = true;
       for (const key of Object.keys(node)) visit(node[key]);
     }
 
@@ -236,7 +307,8 @@ function installYoutubeAdblock(target) {
 
   function stripResponseText(text, url) {
     const kind = kindFor(url);
-    if (!kind || typeof text !== "string" || !textLooksLikeAds(text)) return { text, blocked: false };
+    if (!kind || typeof text !== "string") return { text, blocked: false };
+    if (!textLooksLikeAds(text) && !textHasStartHold(text)) return { text, blocked: false };
     try {
       const parsed = nativeJSONParse(text);
       const stripped = stripValue(parsed, kind);
@@ -248,33 +320,62 @@ function installYoutubeAdblock(target) {
     }
   }
 
+  function bodyText(body) {
+    if (typeof body === "string") return body;
+    try {
+      if (body instanceof ArrayBuffer) return new TextDecoder().decode(body);
+      if (ArrayBuffer.isView(body)) return new TextDecoder().decode(body);
+    } catch {
+      return "";
+    }
+    return "";
+  }
+
   function applyNoAdPlayback(body) {
-    if (typeof body !== "string" || !body.includes("contentPlaybackContext")) return { body, changed: false };
+    const text = bodyText(body);
+    if (!text || !text.includes("contentPlaybackContext")) return { body, changed: false };
     let parsed;
     try {
-      parsed = nativeJSONParse(body);
+      parsed = nativeJSONParse(text);
     } catch {
       return { body, changed: false };
     }
     const playback = parsed && parsed.playbackContext && parsed.playbackContext.contentPlaybackContext;
     if (!playback || typeof playback !== "object" || Array.isArray(playback)) return { body, changed: false };
     if (playback.isInlinePlaybackNoAd === true) return { body, changed: false };
-    playback.isInlinePlaybackNoAd = true;
+    // Rebuild this object. A locker can freeze the property on YouTube's own
+    // object so a direct assignment never reaches the request. A fresh parse
+    // has no locker, and stringify writes the flag the server actually reads.
+    const fresh = nativeJSONParse(text);
+    fresh.playbackContext = nativeJSONParse(JSON.stringify(fresh.playbackContext));
+    fresh.playbackContext.contentPlaybackContext.isInlinePlaybackNoAd = true;
     try {
-      return { body: JSON.stringify(parsed), changed: true };
+      return { body: JSON.stringify(fresh), changed: true };
     } catch {
       return { body, changed: false };
     }
   }
 
-  // YouTube's web player reads SABR (UMP) from googlevideo /videoplayback.
-  // Part type 35 is the next-request policy. Protobuf field 4 of that part
-  // is backoffTimeMs: the player waits that long on a black spinner before
-  // it asks for picture. 10000 is the common preroll-sized hold. The part
-  // header is YouTube's hpI integer, not a protobuf varint.
+  // Object.assign builds the fetch init before fetch runs. YouTube locks
+  // window.fetch in some sessions, so this is the path that still runs.
+  function markPlaybackRequest(value) {
+    if (!value || typeof value !== "object" || typeof value.body !== "string") return value;
+    const marked = applyNoAdPlayback(value.body);
+    if (marked.changed) value.body = marked.body;
+    return value;
+  }
+
+  // YouTube's web player reads SABR (UMP) from googlevideo /videoplayback
+  // and from /initplayback, which carries the same policy before picture
+  // bytes on the first request. Part type 35 is the next-request policy.
+  // Protobuf field 4 of that part is backoffTimeMs: the player waits that
+  // long on a black spinner before it asks for picture. 10000 is the common
+  // preroll-sized hold. Part type 47 is the start-buffer policy. The part
+  // header is YouTube's hpI integer, not a protobuf varint. A part type
+  // above 127 is not UMP.
   function isSabrPlayback(url) {
     const text = String(url || "");
-    if (!text.includes("videoplayback")) return false;
+    if (!text.includes("videoplayback") && !text.includes("initplayback")) return false;
     let parsed;
     try {
       parsed = new URL(text, "https://www.youtube.com");
@@ -338,41 +439,8 @@ function installYoutubeAdblock(target) {
     if (!type) return bytes.length >= 10 ? { invalid: true } : { need: true };
     const size = readHpI(bytes, type.next);
     if (!size) return bytes.length >= type.next + 5 ? { invalid: true } : { need: true };
-    if (type.value < 1 || type.value > 80 || size.value > 16000000) return { invalid: true };
+    if (type.value < 1 || type.value > 127 || size.value > 16000000) return { invalid: true };
     return { type: type.value, size: size.value, headerLen: size.next };
-  }
-
-  // Returns the [start, end) of top-level field 4, or null when the
-  // payload is not that policy message. Does not write.
-  function field4Range(bytes, start, end) {
-    let index = start;
-    let range = null;
-    while (index < end) {
-      const key = readProtoVarint(bytes, index, end);
-      if (!key || key.value < 8) return null;
-      const field = key.value >>> 3;
-      const wire = key.value & 7;
-      if (wire === 0) {
-        const val = readProtoVarint(bytes, key.next, end);
-        if (!val) return null;
-        if (field === 4) range = [key.next, val.next];
-        index = val.next;
-      } else if (wire === 2) {
-        const len = readProtoVarint(bytes, key.next, end);
-        if (!len || len.next + len.value > end) return null;
-        index = len.next + len.value;
-      } else if (wire === 5) {
-        index = key.next + 4;
-        if (index > end) return null;
-      } else if (wire === 1) {
-        index = key.next + 8;
-        if (index > end) return null;
-      } else {
-        return null;
-      }
-    }
-    if (index !== end) return null;
-    return range;
   }
 
   function zeroVarint(bytes, start, end) {
@@ -384,6 +452,99 @@ function installYoutubeAdblock(target) {
     }
     for (let index = start; index < end - 1; index++) bytes[index] = 128;
     bytes[end - 1] = 0;
+  }
+
+  // Zeros every top-level field 4 (backoffTimeMs) and field 2
+  // (targetVideoReadaheadMs) already in the slice. The player reads the first
+  // backoff and stops, so a later unknown field must not put that wait back.
+  // Field 2 is the video buffer target that can still hold a black start
+  // after the backoff is 0. Field 1, the audio target, stays. A walk that
+  // stops early still keeps the zeros.
+  function zeroBackoffFields(bytes, start, end) {
+    let index = start;
+    while (index < end) {
+      const key = readProtoVarint(bytes, index, end);
+      if (!key || key.value < 8) return;
+      const field = key.value >>> 3;
+      const wire = key.value & 7;
+      if (wire === 0) {
+        const val = readProtoVarint(bytes, key.next, end);
+        if (!val) return;
+        if (field === 4 || field === 2) zeroVarint(bytes, key.next, val.next);
+        index = val.next;
+      } else if (wire === 2) {
+        const len = readProtoVarint(bytes, key.next, end);
+        if (!len || len.next + len.value > end) return;
+        index = len.next + len.value;
+      } else if (wire === 5) {
+        if (key.next + 4 > end) return;
+        index = key.next + 4;
+      } else if (wire === 1) {
+        if (key.next + 8 > end) return;
+        index = key.next + 8;
+      } else {
+        return;
+      }
+    }
+  }
+
+  // Part 47 is the playback-start policy. Nested field 2 is minReadaheadMs.
+  // A large value holds the first picture until that much media is buffered,
+  // which is the black loading screen after backoffTimeMs is already 0.
+  function zeroReadaheadMs(bytes, start, end) {
+    let index = start;
+    while (index < end) {
+      const key = readProtoVarint(bytes, index, end);
+      if (!key || key.value < 8) return;
+      const field = key.value >>> 3;
+      const wire = key.value & 7;
+      if (wire === 0) {
+        const val = readProtoVarint(bytes, key.next, end);
+        if (!val) return;
+        if (field === 2) zeroVarint(bytes, key.next, val.next);
+        index = val.next;
+      } else if (wire === 2) {
+        const len = readProtoVarint(bytes, key.next, end);
+        if (!len || len.next + len.value > end) return;
+        index = len.next + len.value;
+      } else if (wire === 5) {
+        if (key.next + 4 > end) return;
+        index = key.next + 4;
+      } else if (wire === 1) {
+        if (key.next + 8 > end) return;
+        index = key.next + 8;
+      } else {
+        return;
+      }
+    }
+  }
+
+  function zeroStartReadahead(bytes, start, end) {
+    let index = start;
+    while (index < end) {
+      const key = readProtoVarint(bytes, index, end);
+      if (!key || key.value < 8) return;
+      const field = key.value >>> 3;
+      const wire = key.value & 7;
+      if (wire === 0) {
+        const val = readProtoVarint(bytes, key.next, end);
+        if (!val) return;
+        index = val.next;
+      } else if (wire === 2) {
+        const len = readProtoVarint(bytes, key.next, end);
+        if (!len || len.next + len.value > end) return;
+        if (field === 1 || field === 2) zeroReadaheadMs(bytes, len.next, len.next + len.value);
+        index = len.next + len.value;
+      } else if (wire === 5) {
+        if (key.next + 4 > end) return;
+        index = key.next + 4;
+      } else if (wire === 1) {
+        if (key.next + 8 > end) return;
+        index = key.next + 8;
+      } else {
+        return;
+      }
+    }
   }
 
   function createUmpBackoffParser() {
@@ -413,12 +574,12 @@ function installYoutubeAdblock(target) {
           pending = new Uint8Array(0);
           break;
         }
-        if (header.type === 35 && header.size <= 65536) {
+        if ((header.type === 35 || header.type === 47) && header.size <= 65536) {
           const total = header.headerLen + header.size;
           if (pending.length < total) break;
           const part = pending.slice(0, total);
-          const range = field4Range(part, header.headerLen, total);
-          if (range) zeroVarint(part, range[0], range[1]);
+          if (header.type === 35) zeroBackoffFields(part, header.headerLen, total);
+          else zeroStartReadahead(part, header.headerLen, total);
           ready.push(part);
           pending = pending.subarray(total);
           continue;
@@ -431,6 +592,15 @@ function installYoutubeAdblock(target) {
     }
 
     function finish() {
+      if (!passthrough && skip === 0 && pending.length) {
+        const header = readUmpHeader(pending);
+        if (header && !header.need && !header.invalid && (header.type === 35 || header.type === 47)) {
+          const copy = pending.slice();
+          if (header.type === 35) zeroBackoffFields(copy, header.headerLen, copy.length);
+          else zeroStartReadahead(copy, header.headerLen, copy.length);
+          pending = copy;
+        }
+      }
       const tail = pending;
       pending = new Uint8Array(0);
       skip = 0;
@@ -463,6 +633,8 @@ function installYoutubeAdblock(target) {
     stripValue,
     stripResponseText,
     applyNoAdPlayback,
+    markPlaybackRequest,
+    textHasStartHold,
     isSabrPlayback,
     createUmpBackoffParser,
     patchUmpBackoff,
@@ -494,6 +666,20 @@ function startYoutubeAdblock() {
   const nativeOpen = XMLHttpRequest.prototype.open;
   const nativeSend = XMLHttpRequest.prototype.send;
   const nativeParse = JSON.parse;
+  const nativeAssign = Object.assign;
+  try {
+    Object.assign = function (target) {
+      const result = nativeAssign.apply(Object, arguments);
+      try {
+        api.markPlaybackRequest(result);
+      } catch (error) {
+        logFailOpen(error);
+      }
+      return result;
+    };
+  } catch (error) {
+    logFailOpen(error);
+  }
   let hideTimer = 0;
   let noticeGeneration = 0;
   const retryTimers = new Set();
@@ -631,12 +817,13 @@ function startYoutubeAdblock() {
     const path = location.pathname || "";
     if (path === "/watch") return "watch";
     if (path.startsWith("/shorts")) return "reel";
-    if (path === "/" || path === "") return "browse";
+    if (path === "/" || path === "" || path.startsWith("/results")) return "browse";
     return "";
   }
 
   async function rewritePlayerBody(input, init) {
-    if (init && typeof init.body === "string") {
+    const stream = typeof ReadableStream !== "undefined" && init && init.body instanceof ReadableStream;
+    if (init && init.body != null && !stream) {
       const marked = api.applyNoAdPlayback(init.body);
       if (!marked.changed) return { input, init };
       return { input, init: Object.assign({}, init, { body: marked.body }) };
@@ -816,7 +1003,7 @@ function startYoutubeAdblock() {
   };
 
   XMLHttpRequest.prototype.send = function (body) {
-    if (api.kindFor(this.__ytUrl || "") === "player" && typeof body === "string") {
+    if (api.kindFor(this.__ytUrl || "") === "player" && body != null) {
       try {
         const marked = api.applyNoAdPlayback(body);
         if (marked.changed) body = marked.body;
@@ -824,16 +1011,17 @@ function startYoutubeAdblock() {
         logFailOpen(error);
       }
     }
+    if (api.isSabrPlayback(this.__ytUrl || "")) installSabrPatch(this);
     return nativeSend.call(this, body);
   };
 
   JSON.parse = function (text, reviver) {
     const value = nativeParse.call(this, text, reviver);
-    if (typeof text !== "string" || !api.textLooksLikeAds(text)) return value;
+    if (typeof text !== "string" || (!api.textLooksLikeAds(text) && !api.textHasStartHold(text))) return value;
     const path = location.pathname || "";
     const kind = path.startsWith("/shorts")
       ? "reel"
-      : (path === "/watch" ? "watch" : ((path === "/" || path === "") ? "browse" : "player"));
+      : (path === "/watch" ? "watch" : ((path === "/" || path === "" || path.startsWith("/results")) ? "browse" : "player"));
     try {
       if (isAdOnlyPlayer(value)) return value;
       const stripped = api.stripValue(value, kind);

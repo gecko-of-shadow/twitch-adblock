@@ -105,6 +105,17 @@ Deno.test("a player request asks YouTube not to schedule ads", () => {
   assertEquals(api.applyNoAdPlayback(marked.body).changed, false);
   assertEquals(api.applyNoAdPlayback("not-json").changed, false);
   assertEquals(api.applyNoAdPlayback(JSON.stringify({ videoId: "abc" })).body, JSON.stringify({ videoId: "abc" }));
+  const locked = body.replace('"signatureTimestamp":1', '"signatureTimestamp":1,"isInlinePlaybackNoAd":false');
+  const unlocked = api.applyNoAdPlayback(locked);
+  assertEquals(JSON.parse(unlocked.body).playbackContext.contentPlaybackContext.isInlinePlaybackNoAd, true);
+  const bytes = new TextEncoder().encode(body);
+  const fromBytes = api.applyNoAdPlayback(bytes);
+  assert(fromBytes.changed, "a byte player body is marked");
+  assertEquals(JSON.parse(fromBytes.body).playbackContext.contentPlaybackContext.isInlinePlaybackNoAd, true);
+  const init = { method: "POST", body };
+  api.markPlaybackRequest(init);
+  assertEquals(JSON.parse(init.body).playbackContext.contentPlaybackContext.isInlinePlaybackNoAd, true);
+  assert(source.includes("markPlaybackRequest"), "player bodies are marked before fetch is locked");
 });
 
 Deno.test("shorts ads are removed and real shorts stay", () => {
@@ -312,6 +323,7 @@ Deno.test("browse continuations drop in-feed ads and keep the continuation token
 
 Deno.test("browse kind is recognized and home CSS targets Sponsored cards", () => {
   assertEquals(api.kindFor("https://www.youtube.com/youtubei/v1/browse?prettyPrint=false"), "browse");
+  assertEquals(api.kindFor("https://www.youtube.com/youtubei/v1/search?prettyPrint=false"), "browse");
   assert(api.HOME_FEED_AD_CSS.includes("ytd-rich-item-renderer:has(ytd-ad-slot-renderer)"), "rich item with ad slot");
   assert(api.HOME_FEED_AD_CSS.includes("ytd-promoted-sparkles-web-renderer"), "sparkles sponsored card");
   assert(api.HOME_FEED_AD_CSS.includes("ytd-in-feed-ad-layout-renderer"), "in-feed ad layout");
@@ -320,6 +332,70 @@ Deno.test("browse kind is recognized and home CSS targets Sponsored cards", () =
   assert(source.includes("injectHomeFeedCss"), "home CSS is injected");
   assert(source.includes('kind === "browse"'), "browse stripping is enabled");
   assert(!api.HOME_FEED_AD_CSS.includes("ytd-rich-item-renderer:has(ytd-rich-grid-media)"), "normal home videos are not hidden");
+  assert(api.HOME_FEED_AD_CSS.includes("ytd-search-pyv-renderer"), "search sponsored card");
+  assert(api.WATCH_AD_KEYS.includes("searchPyvRenderer"), "search sponsored key");
+});
+
+Deno.test("search results drop sponsored cards and keep the video", () => {
+  const body = {
+    contents: [{
+      itemSectionRenderer: {
+        contents: [
+          { searchPyvRenderer: { ads: [{ title: "Sponsored shoes" }] } },
+          { videoRenderer: { videoId: "keep-search" } },
+          { continuationItemRenderer: { token: "more" } },
+        ],
+      },
+    }],
+  };
+  const stripped = api.stripResponseText(JSON.stringify(body), "https://www.youtube.com/youtubei/v1/search");
+  assert(stripped.blocked, "search ads were removed");
+  const items = JSON.parse(stripped.text).contents[0].itemSectionRenderer.contents;
+  assertEquals(items.map((item) => Object.keys(item)[0]), ["videoRenderer", "continuationItemRenderer"]);
+  assertEquals(items[0].videoRenderer.videoId, "keep-search");
+  assert(!stripped.text.includes("Sponsored shoes"));
+});
+
+Deno.test("a player response loses its start-buffer wait and keeps server playback", () => {
+  const body = {
+    videoDetails: { videoId: "dQw4w9WgXcQ", title: "Same video" },
+    streamingData: {
+      formats: [{ url: playback, itag: 18 }],
+      serverAbrStreamingUrl: playback,
+    },
+    playabilityStatus: { status: "OK" },
+    playerConfig: {
+      mediaCommonConfig: {
+        useServerDrivenAbr: true,
+        serverPlaybackStartConfig: {
+          enable: true,
+          playbackStartPolicy: {
+            startMinReadaheadPolicy: [{ minReadaheadMs: 12000, minBandwidthBytesPerSec: 1500 }],
+            resumeMinReadaheadPolicy: [
+              { minReadaheadMs: 11000, minBandwidthBytesPerSec: 800 },
+              { minReadaheadMs: 13000, minBandwidthBytesPerSec: 400 },
+            ],
+          },
+        },
+      },
+    },
+  };
+  const stripped = api.stripResponseText(JSON.stringify(body), "https://www.youtube.com/youtubei/v1/player");
+  assert(stripped.blocked, "the start wait is rewritten");
+  const parsed = JSON.parse(stripped.text);
+  const common = parsed.playerConfig.mediaCommonConfig;
+  const config = common.serverPlaybackStartConfig;
+  const policy = config.playbackStartPolicy;
+  assertEquals(config.enable, false);
+  assertEquals(common.useServerDrivenAbr, true, "server playback stays available");
+  assertEquals(policy.startMinReadaheadPolicy[0].minReadaheadMs, 0);
+  assertEquals(policy.startMinReadaheadPolicy[0].minBandwidthBytesPerSec, 1500);
+  assertEquals(policy.resumeMinReadaheadPolicy[0].minReadaheadMs, 0);
+  assertEquals(policy.resumeMinReadaheadPolicy[1].minReadaheadMs, 0);
+  assertEquals(policy.resumeMinReadaheadPolicy[0].minBandwidthBytesPerSec, 800);
+  assertEquals(parsed.streamingData.formats[0].url, playback);
+  assertEquals(parsed.streamingData.serverAbrStreamingUrl, playback);
+  assertEquals(parsed.videoDetails.videoId, "dQw4w9WgXcQ");
 });
 
 function encodeVarint(value) {
@@ -448,4 +524,142 @@ Deno.test("a normal media file is not rewritten as a SABR policy", () => {
   const mp4 = Uint8Array.from([0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109]);
   const patched = api.patchUmpBackoff(mp4);
   assertEquals(Array.from(patched), Array.from(mp4));
+});
+
+function holdsIn(bytes) {
+  const found = [];
+  let offset = 0;
+  while (offset < bytes.length) {
+    if (bytes[offset] >= 128) break;
+    const type = bytes[offset];
+    let size;
+    let headerLen;
+    if (offset + 1 >= bytes.length) break;
+    if (bytes[offset + 1] < 128) {
+      size = bytes[offset + 1];
+      headerLen = 2;
+    } else if (bytes[offset + 1] < 192 && offset + 2 < bytes.length) {
+      size = (bytes[offset + 1] & 63) + 64 * bytes[offset + 2];
+      headerLen = 3;
+    } else {
+      break;
+    }
+    const start = offset + headerLen;
+    const end = start + size;
+    if (end > bytes.length) break;
+    if (type === 35) {
+      let index = start;
+      while (index < end) {
+        const key = decodeVarint(bytes, index, end);
+        if (!key) break;
+        const field = key.value >>> 3;
+        const wire = key.value & 7;
+        if (wire === 0) {
+          const val = decodeVarint(bytes, key.next, end);
+          if (!val) break;
+          if (field === 4) found.push(val.value);
+          index = val.next;
+        } else if (wire === 2) {
+          const len = decodeVarint(bytes, key.next, end);
+          if (!len) break;
+          index = len.next + len.value;
+        } else {
+          break;
+        }
+      }
+    }
+    offset = end;
+  }
+  return found;
+}
+
+function varintsInPart(bytes, partType, fieldNo) {
+  const found = [];
+  function walk(start, end) {
+    let index = start;
+    while (index < end) {
+      const key = decodeVarint(bytes, index, end);
+      if (!key) return;
+      const field = key.value >>> 3;
+      const wire = key.value & 7;
+      if (wire === 0) {
+        const val = decodeVarint(bytes, key.next, end);
+        if (!val) return;
+        if (field === fieldNo) found.push(val.value);
+        index = val.next;
+      } else if (wire === 2) {
+        const len = decodeVarint(bytes, key.next, end);
+        if (!len || len.next + len.value > end) return;
+        walk(len.next, len.next + len.value);
+        index = len.next + len.value;
+      } else {
+        return;
+      }
+    }
+  }
+  let offset = 0;
+  while (offset < bytes.length) {
+    if (bytes[offset] >= 128) break;
+    const type = bytes[offset];
+    let size;
+    let headerLen;
+    if (offset + 1 >= bytes.length) break;
+    if (bytes[offset + 1] < 128) {
+      size = bytes[offset + 1];
+      headerLen = 2;
+    } else if (bytes[offset + 1] < 192 && offset + 2 < bytes.length) {
+      size = (bytes[offset + 1] & 63) + 64 * bytes[offset + 2];
+      headerLen = 3;
+    } else {
+      break;
+    }
+    const start = offset + headerLen;
+    const end = start + size;
+    if (end > bytes.length) break;
+    if (type === partType) walk(start, end);
+    offset = end;
+  }
+  return found;
+}
+
+function ajq(bandwidth, readahead) {
+  return [0x08, ...encodeVarint(bandwidth), 0x10, ...encodeVarint(readahead)];
+}
+
+Deno.test("a newer playback part does not hide a later backoff", () => {
+  const newer = umpPart(90, [1, 2, 3, 4, 5]);
+  const policy = policyPart(22000).part;
+  const raw = new Uint8Array(newer.length + policy.length);
+  raw.set(newer, 0);
+  raw.set(policy, newer.length);
+  assertEquals(spinnerHoldMs(raw), 22000);
+  const patched = api.patchUmpBackoff(raw);
+  assertEquals(patched.length, raw.length);
+  assertEquals(spinnerHoldMs(patched), 0);
+  assertEquals(Array.from(patched.subarray(0, newer.length)), Array.from(newer));
+});
+
+Deno.test("the first stream and the start-buffer wait are cleared", () => {
+  const start = ajq(1500, 12000);
+  const resume = ajq(800, 11000);
+  const payload = [0x0a, start.length, ...start, 0x12, resume.length, ...resume];
+  const part = umpPart(47, payload);
+  const backoff = policyPart(10000).part;
+  const videoTarget = umpPart(35, [0x08, ...encodeVarint(1500), 0x10, ...encodeVarint(9000), 0x20, ...encodeVarint(10000)]);
+  const raw = new Uint8Array(part.length + backoff.length + videoTarget.length);
+  raw.set(part, 0);
+  raw.set(backoff, part.length);
+  raw.set(videoTarget, part.length + backoff.length);
+  assertEquals(varintsInPart(raw, 47, 2), [12000, 11000]);
+  assertEquals(varintsInPart(raw, 47, 1), [1500, 800]);
+  assertEquals(varintsInPart(raw, 35, 2), [9000]);
+  const patched = api.patchUmpBackoff(raw);
+  assertEquals(patched.length, raw.length);
+  assertEquals(varintsInPart(patched, 47, 2), [0, 0]);
+  assertEquals(varintsInPart(patched, 47, 1), [1500, 800]);
+  assertEquals(holdsIn(patched), [0, 0]);
+  assertEquals(varintsInPart(patched, 35, 2), [0]);
+  assertEquals(varintsInPart(patched, 35, 1), [1500, 1500]);
+  assertEquals(api.isSabrPlayback("https://rr3---sn.googlevideo.com/initplayback?source=youtube"), true);
+  assertEquals(api.isSabrPlayback("https://www.youtube.com/initplayback?source=youtube"), false);
 });
