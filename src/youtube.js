@@ -192,9 +192,9 @@ function installYoutubeAdblock(target) {
   // The player will not show the first picture until minReadaheadMs of media
   // is buffered. That wait lives on the start and resume policies, including
   // when those policies are arrays. Zeroing it leaves the bandwidth floor and
-  // the video urls alone. The server start switch is turned off so a leftover
-  // policy cannot put the wait back. Server ABR stays on: a video that has
-  // only a SABR url would otherwise have nothing left to play.
+  // the video urls alone. The server start switch stays on. Turning it off
+  // leaves the player on the black spinner with the interruptions toast.
+  // Server ABR stays on: a video that has only a SABR url still has a stream.
   function zeroPolicyList(list) {
     const items = Array.isArray(list) ? list : list && typeof list === "object" ? [list] : null;
     if (!items) return false;
@@ -232,15 +232,7 @@ function installYoutubeAdblock(target) {
     const policy = node.playbackStartPolicy;
     if (policy && typeof policy === "object" && policy !== node && zeroStartPolicies(policy)) changed = true;
     const start = node.serverPlaybackStartConfig;
-    if (start && typeof start === "object" && !Array.isArray(start)) {
-      if (Object.prototype.hasOwnProperty.call(start, "enable") && start.enable !== false) {
-        start.enable = false;
-        changed = true;
-      }
-      if (start !== node && zeroStartPolicies(start)) changed = true;
-    }
-    if (Object.prototype.hasOwnProperty.call(node, "enable") && node.playbackStartPolicy && node.enable !== false) {
-      node.enable = false;
+    if (start && typeof start === "object" && !Array.isArray(start) && start !== node && zeroStartPolicies(start)) {
       changed = true;
     }
     return changed;
@@ -610,6 +602,56 @@ function installYoutubeAdblock(target) {
     return { push, finish };
   }
 
+  function isInterruptionsToast(node) {
+    if (!node || node.nodeType !== 1) return false;
+    const text = String(node.textContent || "").replace(/\s+/g, " ").trim();
+    if (!/Experiencing interruptions\?/i.test(text)) {
+      const link = typeof node.querySelector === "function"
+        ? node.querySelector('a[href*="check_ad_blockers"], a[href*="blocker"]')
+        : null;
+      if (!link) return false;
+    }
+    if (typeof node.matches === "function") {
+      if (node.matches("yt-notification-action-renderer, tp-yt-paper-toast")) return true;
+    }
+    return !!(node.closest && node.closest("yt-notification-action-renderer, tp-yt-paper-toast"));
+  }
+
+  function removeInterruptionsToast(root) {
+    const scope = root || (typeof document !== "undefined" ? document : null);
+    if (!scope || typeof scope.querySelectorAll !== "function") return;
+    let candidates;
+    try {
+      candidates = scope.querySelectorAll(
+        "yt-notification-action-renderer, tp-yt-paper-toast#toast, tp-yt-paper-toast.toast-button"
+      );
+    } catch {
+      return;
+    }
+    for (const node of candidates) {
+      if (!isInterruptionsToast(node)) continue;
+      const outer = (node.closest && node.closest("yt-notification-action-renderer")) || node;
+      try {
+        outer.remove();
+      } catch {
+        // A toast the page already removed is left alone. Playback continues.
+      }
+    }
+  }
+
+  // True only for the black start stall: metadata and a little media are in,
+  // the picture has not moved, and the player is still spinning. A later
+  // user pause is not this state.
+  function shouldNudgeStart(state) {
+    if (!state || state.used === true) return false;
+    if (!(state.duration > 0) || state.readyState < 2 || state.paused !== true) return false;
+    if (!(state.currentTime < 0.25)) return false;
+    const classes = String(state.classes || "");
+    if (classes.includes("ad-showing") || classes.includes("ad-interrupting")) return false;
+    if (classes.includes("paused-mode") && state.currentTime > 0) return false;
+    return state.spinner === true || classes.includes("unstarted-mode") || classes.includes("buffering-mode");
+  }
+
   function patchUmpBackoff(bytes) {
     const parser = createUmpBackoffParser();
     const head = parser.push(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || 0));
@@ -638,6 +680,9 @@ function installYoutubeAdblock(target) {
     isSabrPlayback,
     createUmpBackoffParser,
     patchUmpBackoff,
+    isInterruptionsToast,
+    removeInterruptionsToast,
+    shouldNudgeStart,
   });
 }
 
@@ -682,6 +727,7 @@ function startYoutubeAdblock() {
   }
   let hideTimer = 0;
   let noticeGeneration = 0;
+  let startNudged = false;
   const retryTimers = new Set();
 
   function requestUrl(input) {
@@ -765,6 +811,47 @@ function startYoutubeAdblock() {
       removed = true;
     }
     if (removed) notify(true);
+  }
+
+  function nudgeStart() {
+    if (!onWatchSurface()) return;
+    let video;
+    let player;
+    try {
+      player = playerRoot();
+      video = player && typeof player.querySelector === "function" ? player.querySelector("video") : null;
+    } catch {
+      return;
+    }
+    if (!video) return;
+    const classes = player && player.className ? String(player.className) : "";
+    let spinner = false;
+    try {
+      spinner = !!(player.querySelector(".ytp-spinner, .ytp-spinner-container"));
+    } catch {
+      spinner = false;
+    }
+    if (!api.shouldNudgeStart({
+      used: startNudged,
+      duration: video.duration,
+      readyState: video.readyState,
+      paused: video.paused,
+      currentTime: video.currentTime,
+      classes,
+      spinner,
+    })) return;
+    startNudged = true;
+    try {
+      const pending = video.play();
+      if (pending && typeof pending.catch === "function") pending.catch(function () {});
+    } catch (error) {
+      logFailOpen(error);
+    }
+    try {
+      if (typeof player.playVideo === "function") player.playVideo();
+    } catch (error) {
+      logFailOpen(error);
+    }
   }
 
   function hookInitial(name, kind) {
@@ -1070,17 +1157,26 @@ function startYoutubeAdblock() {
       requestAnimationFrame(() => {
         scheduled = false;
         removeDomAds();
+        api.removeInterruptionsToast();
+        nudgeStart();
       });
     });
     observer.observe(root, { childList: true, subtree: true });
     removeDomAds();
+    api.removeInterruptionsToast();
   }
 
   injectHomeFeedCss();
-  document.addEventListener("yt-navigate-start", () => notify(false), true);
+  document.addEventListener("yt-navigate-start", () => {
+    startNudged = false;
+    notify(false);
+  }, true);
   document.addEventListener("yt-navigate-finish", () => {
     injectHomeFeedCss();
     removeDomAds();
+    api.removeInterruptionsToast();
+    setTimeout(nudgeStart, 1000);
+    setTimeout(nudgeStart, 3000);
   }, true);
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", watchDom, { once: true });

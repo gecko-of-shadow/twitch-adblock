@@ -207,7 +207,7 @@ Deno.test("dom selectors remove banners and overlays and leave the video element
 });
 
 Deno.test("the youtube script does not swap media or phone home", () => {
-  assert(!source.includes(".currentTime"), "do not seek the picture");
+  assert(!/\.currentTime\s*=/.test(source), "do not seek the picture");
   assert(!source.includes("playbackRate"), "do not fast-forward an ad");
   assert(!source.includes(".pause("), "do not freeze playback");
   assert(!source.includes("blankSegment"), "do not swap a blank frame");
@@ -386,7 +386,7 @@ Deno.test("a player response loses its start-buffer wait and keeps server playba
   const common = parsed.playerConfig.mediaCommonConfig;
   const config = common.serverPlaybackStartConfig;
   const policy = config.playbackStartPolicy;
-  assertEquals(config.enable, false);
+  assertEquals(config.enable, true, "the start switch stays on so the picture can leave the spinner");
   assertEquals(common.useServerDrivenAbr, true, "server playback stays available");
   assertEquals(policy.startMinReadaheadPolicy[0].minReadaheadMs, 0);
   assertEquals(policy.startMinReadaheadPolicy[0].minBandwidthBytesPerSec, 1500);
@@ -502,7 +502,7 @@ Deno.test("clicking a video does not sit on a 10 second black loading spinner", 
   assertEquals(api.isSabrPlayback("https://rr3---sn.googlevideo.com/videoplayback?id=1"), true);
   assertEquals(api.isSabrPlayback("https://www.youtube.com/watch?v=abc"), false);
   assert(source.includes("createUmpBackoffParser"), "playback responses go through the backoff parser");
-  assert(!source.includes(".currentTime"), "do not seek the picture");
+  assert(!/\.currentTime\s*=/.test(source), "do not seek the picture");
 });
 
 Deno.test("a backoff split across stream chunks is still cleared", () => {
@@ -662,4 +662,114 @@ Deno.test("the first stream and the start-buffer wait are cleared", () => {
   assertEquals(varintsInPart(patched, 35, 1), [1500, 1500]);
   assertEquals(api.isSabrPlayback("https://rr3---sn.googlevideo.com/initplayback?source=youtube"), true);
   assertEquals(api.isSabrPlayback("https://www.youtube.com/initplayback?source=youtube"), false);
+});
+
+function matchesList(node, selector) {
+  return String(selector).split(",").some((part) => {
+    const sel = part.trim();
+    const attr = sel.match(/^([a-z0-9-]*)\[href\*="([^"]+)"\]$/i);
+    if (attr) return node.tag === (attr[1] || node.tag) && String(node.href).includes(attr[2]);
+    const id = sel.match(/^([a-z0-9-]*)#([a-z0-9-]+)$/i);
+    if (id) return node.tag === id[1] && node.id === id[2];
+    const cls = sel.match(/^([a-z0-9-]*)\.([a-z0-9-]+)$/i);
+    if (cls) return node.tag === cls[1] && String(node.className).split(/\s+/).includes(cls[2]);
+    return node.tag === sel;
+  });
+}
+
+function walkNodes(node, all) {
+  all.push(node);
+  for (const child of node.children || []) walkNodes(child, all);
+}
+
+function toastNode(tag, props) {
+  const node = {
+    nodeType: 1,
+    tag,
+    id: props.id || "",
+    className: props.className || "",
+    textContent: props.text || "",
+    href: props.href || "",
+    children: props.children || [],
+    parent: null,
+    removed: false,
+  };
+  for (const child of node.children) {
+    child.parent = node;
+    node.textContent += child.textContent || "";
+  }
+  node.matches = (selector) => matchesList(node, selector);
+  node.closest = (selector) => {
+    let current = node;
+    while (current) {
+      if (current.matches && current.matches(selector)) return current;
+      current = current.parent;
+    }
+    return null;
+  };
+  node.querySelector = (selector) => {
+    const all = [];
+    walkNodes(node, all);
+    return all.find((item) => item !== node && matchesList(item, selector)) || null;
+  };
+  node.querySelectorAll = (selector) => {
+    const all = [];
+    walkNodes(node, all);
+    return all.filter((item) => matchesList(item, selector));
+  };
+  node.remove = () => {
+    node.removed = true;
+  };
+  return node;
+}
+
+Deno.test("the interruptions toast is removed and other toasts stay", () => {
+  const link = toastNode("a", { href: "https://www.youtube.com/#check_ad_blockers" });
+  const interruptions = toastNode("yt-notification-action-renderer", {
+    text: "Experiencing interruptions?",
+    children: [toastNode("tp-yt-paper-toast", { id: "toast", className: "toast-button", text: "Experiencing interruptions?" })],
+  });
+  const hrefOnly = toastNode("yt-notification-action-renderer", {
+    text: "Playback problem",
+    children: [link],
+  });
+  const copied = toastNode("tp-yt-paper-toast", { id: "toast", text: "Copied to clipboard" });
+  const root = toastNode("div", { children: [interruptions, hrefOnly, copied] });
+  assert(api.isInterruptionsToast(interruptions), "the interruptions renderer matches");
+  assert(api.isInterruptionsToast(hrefOnly), "a blocker link matches without the sentence");
+  assert(!api.isInterruptionsToast(copied), "a clipboard toast is not the interruptions toast");
+  api.removeInterruptionsToast(root);
+  assert(interruptions.removed, "the interruptions renderer is removed");
+  assert(hrefOnly.removed, "the blocker-link renderer is removed");
+  assert(!copied.removed, "the clipboard toast stays");
+  const remover = source.slice(
+    source.indexOf("function removeInterruptionsToast"),
+    source.indexOf("function shouldNudgeStart"),
+  );
+  assert(!remover.includes("notify"), "removing the toast does not start the Blocking ads chip");
+  assert(!remover.includes("display:"), "the toast is removed, not hidden");
+  assert(source.includes("api.removeInterruptionsToast()"), "the page watcher removes the toast");
+  assert(source.includes("video.play()"), "a paused start can be asked to play");
+  assert(source.includes("playVideo"), "the player play method is used when it exists");
+  assert(!source.includes(".pause("), "do not freeze playback");
+});
+
+Deno.test("only a paused black start is asked to play", () => {
+  const paused = {
+    used: false,
+    duration: 83,
+    readyState: 2,
+    paused: true,
+    currentTime: 0,
+    classes: "unstarted-mode",
+    spinner: true,
+  };
+  assert(api.shouldNudgeStart(paused), "a paused start with the spinner up can play");
+  assert(!api.shouldNudgeStart({ ...paused, paused: false }), "an unpaused hold is left to the buffer clear");
+  assert(!api.shouldNudgeStart({ ...paused, currentTime: 4 }), "playback that has moved is left alone");
+  assert(!api.shouldNudgeStart({ ...paused, classes: "ad-showing html5-video-player", spinner: true }), "an ad is not nudged");
+  assert(!api.shouldNudgeStart({ ...paused, used: true }), "one nudge per video");
+  assert(!api.shouldNudgeStart({ ...paused, readyState: 1, spinner: true }), "nothing plays before picture data exists");
+  assert(!api.shouldNudgeStart({ ...paused, spinner: false, classes: "playing-mode" }), "a playing picture is left alone");
+  assert(api.shouldNudgeStart({ ...paused, spinner: false, classes: "buffering-mode" }), "a paused buffer at the start can play");
 });
