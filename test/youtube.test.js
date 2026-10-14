@@ -720,11 +720,19 @@ function toastNode(tag, props) {
   node.remove = () => {
     node.removed = true;
   };
+  node.hidden = false;
+  node.style = {
+    setProperty(name, value, priority) {
+      this[name] = value;
+      this.priority = priority;
+    },
+  };
   return node;
 }
 
-Deno.test("the interruptions toast is removed and other toasts stay", () => {
+Deno.test("the interruptions toast is hidden in place and other toasts stay", () => {
   const link = toastNode("a", { href: "https://www.youtube.com/#check_ad_blockers" });
+  const support = toastNode("a", { href: "https://support.google.com/youtube/answer/3037019" });
   const interruptions = toastNode("yt-notification-action-renderer", {
     text: "Experiencing interruptions?",
     children: [toastNode("tp-yt-paper-toast", { id: "toast", className: "toast-button", text: "Experiencing interruptions?" })],
@@ -733,22 +741,38 @@ Deno.test("the interruptions toast is removed and other toasts stay", () => {
     text: "Playback problem",
     children: [link],
   });
+  const supportOnly = toastNode("yt-notification-action-renderer", {
+    text: "Video paused",
+    children: [support],
+  });
   const copied = toastNode("tp-yt-paper-toast", { id: "toast", text: "Copied to clipboard" });
-  const root = toastNode("div", { children: [interruptions, hrefOnly, copied] });
+  const root = toastNode("div", { children: [interruptions, hrefOnly, supportOnly, copied] });
   assert(api.isInterruptionsToast(interruptions), "the interruptions renderer matches");
   assert(api.isInterruptionsToast(hrefOnly), "a blocker link matches without the sentence");
+  assert(api.isInterruptionsToast(supportOnly), "the support article matches without the sentence");
   assert(!api.isInterruptionsToast(copied), "a clipboard toast is not the interruptions toast");
   api.removeInterruptionsToast(root);
-  assert(interruptions.removed, "the interruptions renderer is removed");
-  assert(hrefOnly.removed, "the blocker-link renderer is removed");
+  assert(!interruptions.removed, "the interruptions renderer stays in the page");
+  assert(interruptions.hidden, "the interruptions renderer is hidden");
+  assertEquals(interruptions.style.display, "none");
+  assertEquals(interruptions.style.priority, "important");
+  assert(!hrefOnly.removed, "the blocker-link renderer stays in the page");
+  assert(hrefOnly.hidden, "the blocker-link renderer is hidden");
+  assert(supportOnly.hidden, "the support-article renderer is hidden");
   assert(!copied.removed, "the clipboard toast stays");
+  assert(!copied.hidden, "the clipboard toast stays visible");
   const remover = source.slice(
     source.indexOf("function removeInterruptionsToast"),
     source.indexOf("function shouldNudgeStart"),
   );
-  assert(!remover.includes("notify"), "removing the toast does not start the Blocking ads chip");
-  assert(!remover.includes("display:"), "the toast is removed, not hidden");
-  assert(source.includes("api.removeInterruptionsToast()"), "the page watcher removes the toast");
+  assert(!remover.includes("notify"), "hiding the toast does not start the Blocking ads chip");
+  assert(!remover.includes(".remove("), "the toast is not deleted");
+  assert(remover.includes('setProperty("display", "none", "important")'), "the same node is hidden");
+  assert(source.includes("api.removeInterruptionsToast()"), "the page watcher hides the toast");
+  assert(api.INTERRUPTIONS_TOAST_CSS.includes("ytd-popup-container:has(a[href*=\"3037019\"])"), "the popup shell is hidden with the support link");
+  assert(api.INTERRUPTIONS_TOAST_CSS.split(",").every((sel) => sel.includes(":has(")), "playlist toasts are not covered");
+  assert(!api.INTERRUPTIONS_TOAST_CSS.includes("tp-yt-paper-toast{"), "a bare toast rule is not used");
+  assert(source.includes("api.INTERRUPTIONS_TOAST_CSS"), "the toast rule is injected at document start");
   assert(source.includes("video.play()"), "a paused start can be asked to play");
   assert(source.includes("playVideo"), "the player play method is used when it exists");
   assert(!source.includes(".pause("), "do not freeze playback");

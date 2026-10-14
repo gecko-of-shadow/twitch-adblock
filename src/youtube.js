@@ -65,6 +65,24 @@ function installYoutubeAdblock(target) {
     "ytm-ad-slot-renderer",
     "ytd-search-pyv-renderer",
   ].join(",");
+  // The bottom-left interruptions toast. :has() keeps "Saved" and clipboard
+  // toasts on screen. Deleting the node makes YouTube open a new one.
+  const INTERRUPTIONS_TOAST_CSS = [
+    "yt-notification-action-renderer:has(yt-formatted-string[split-lines*=\"Experiencing interruptions\"])",
+    "yt-notification-action-renderer:has(a[href*=\"3037019\"])",
+    "yt-notification-action-renderer:has(a[href*=\"ad_block\"])",
+    "yt-notification-action-renderer:has(a[href*=\"blocker\"])",
+    "yt-notification-action-renderer:has(a[href*=\"check_ad_blockers\"])",
+    "tp-yt-paper-toast#toast:has(yt-formatted-string[split-lines*=\"Experiencing interruptions\"])",
+    "tp-yt-paper-toast#toast:has(a[href*=\"3037019\"])",
+    "tp-yt-paper-toast#toast:has(a[href*=\"ad_block\"])",
+    "tp-yt-paper-toast#toast:has(a[href*=\"blocker\"])",
+    "tp-yt-paper-toast#toast:has(a[href*=\"check_ad_blockers\"])",
+    "ytd-popup-container:has(yt-formatted-string[split-lines*=\"Experiencing interruptions\"])",
+    "ytd-popup-container:has(a[href*=\"3037019\"])",
+    "ytd-popup-container:has(a[href*=\"ad_block\"])",
+    "ytd-popup-container:has(a[href*=\"check_ad_blockers\"])",
+  ].join(",");
 
   function kindFor(url) {
     let parsed;
@@ -607,7 +625,7 @@ function installYoutubeAdblock(target) {
     const text = String(node.textContent || "").replace(/\s+/g, " ").trim();
     if (!/Experiencing interruptions\?/i.test(text)) {
       const link = typeof node.querySelector === "function"
-        ? node.querySelector('a[href*="check_ad_blockers"], a[href*="blocker"]')
+        ? node.querySelector('a[href*="3037019"], a[href*="ad_block"], a[href*="blocker"], a[href*="check_ad_blockers"]')
         : null;
       if (!link) return false;
     }
@@ -631,10 +649,12 @@ function installYoutubeAdblock(target) {
     for (const node of candidates) {
       if (!isInterruptionsToast(node)) continue;
       const outer = (node.closest && node.closest("yt-notification-action-renderer")) || node;
-      try {
-        outer.remove();
-      } catch {
-        // A toast the page already removed is left alone. Playback continues.
+      // Keep the node. Removing it makes the popup open again on the next frame.
+      outer.hidden = true;
+      const style = outer.style;
+      if (style && typeof style.setProperty === "function") {
+        style.setProperty("display", "none", "important");
+        style.setProperty("pointer-events", "none", "important");
       }
     }
   }
@@ -664,6 +684,7 @@ function installYoutubeAdblock(target) {
   Object.assign(target, {
     DOM_AD_SELECTORS,
     HOME_FEED_AD_CSS,
+    INTERRUPTIONS_TOAST_CSS,
     PLAYER_AD_FIELDS,
     WATCH_AD_KEYS,
     kindFor,
@@ -1137,7 +1158,8 @@ function startYoutubeAdblock() {
       if (document.getElementById && document.getElementById("twitch-adblock-yt-home-css")) return;
       const style = document.createElement("style");
       style.id = "twitch-adblock-yt-home-css";
-      style.textContent = api.HOME_FEED_AD_CSS + "{display:none!important;}";
+      style.textContent = api.HOME_FEED_AD_CSS + "{display:none!important;}"
+        + api.INTERRUPTIONS_TOAST_CSS + "{display:none!important;pointer-events:none!important;}";
       const parent = document.head || document.documentElement;
       if (!parent || typeof parent.appendChild !== "function") return;
       parent.appendChild(style);
