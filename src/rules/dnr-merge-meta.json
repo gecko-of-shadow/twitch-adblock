@@ -3,9 +3,9 @@
   "ruleset_id": "general",
   "path": "src/rules/general-network.json",
   "allow_rules": 3,
-  "block_rules": 1248,
+  "block_rules": 2896,
   "youtube_ad_block_rules": 1,
-  "rule_count": 1252,
+  "rule_count": 2900,
   "exclusion_priority": 2000000,
   "site_domains": [
     "twitch.tv",
@@ -25,8 +25,8 @@
     "live-video.net"
   ],
   "block_id_start": 100,
-  "source_blocks": "scripts/pack-filter-lists.py",
-  "extra_tracker_rule_id": 1347,
+  "source_blocks": "scripts/exp-pack-big-lists.py",
+  "extra_tracker_rule_id": 2995,
   "extra_tracker_domains": [
     "facebook.net",
     "fundingchoicesmessages.google.com",

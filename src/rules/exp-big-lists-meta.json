@@ -1,0 +1,171 @@
+{
+ "domains_total": 231543,
+ "dnr_rules_total": 2900,
+ "stats": {
+  "peter_lowe": {
+   "raw": 3569,
+   "kept": 3565,
+   "skipped_never": 4
+  },
+  "urlhaus_hosts": {
+   "raw": 536,
+   "kept": 536,
+   "skipped_never": 0
+  },
+  "easylist": {
+   "raw": 51399,
+   "kept": 50347,
+   "skipped_never": 3
+  },
+  "easyprivacy": {
+   "raw": 47141,
+   "kept": 46082,
+   "skipped_never": 6
+  },
+  "ublock-filters": {
+   "raw": 110,
+   "kept": 107,
+   "skipped_never": 0
+  },
+  "ublock-badware": {
+   "raw": 2869,
+   "kept": 2839,
+   "skipped_never": 0
+  },
+  "ublock-privacy": {
+   "raw": 111,
+   "kept": 99,
+   "skipped_never": 0
+  },
+  "ublock-quick-fixes": {
+   "raw": 3,
+   "kept": 3,
+   "skipped_never": 0
+  },
+  "adguard-generic": {
+   "raw": 12268,
+   "kept": 11555,
+   "skipped_never": 3
+  },
+  "adguard-mobile": {
+   "raw": 951,
+   "kept": 781,
+   "skipped_never": 3
+  },
+  "adguard-spyware-url": {
+   "raw": 0,
+   "kept": 0,
+   "skipped_never": 0
+  },
+  "curben-phishing": {
+   "raw": 30900,
+   "kept": 30864,
+   "skipped_never": 1
+  },
+  "dpollock-0": {
+   "raw": 13011,
+   "kept": 12210,
+   "skipped_never": 2
+  },
+  "ds-antimalware": {
+   "raw": 12101,
+   "kept": 11916,
+   "skipped_never": 0
+  },
+  "iam-antimalware": {
+   "raw": 7055,
+   "kept": 6398,
+   "skipped_never": 0
+  },
+  "hagezi-pro-mini": {
+   "raw": 74990,
+   "kept": 52807,
+   "skipped_never": 26
+  },
+  "yok-privacy-essentials": {
+   "raw": 337,
+   "kept": 257,
+   "skipped_never": 2
+  },
+  "ds-urlshortener": {
+   "raw": 0,
+   "kept": 0,
+   "skipped_never": 0
+  },
+  "antipaywall": {
+   "raw": 77,
+   "kept": 38,
+   "skipped_never": 0
+  },
+  "adguard-social": {
+   "raw": 48,
+   "kept": 24,
+   "skipped_never": 0
+  },
+  "fanboy-social": {
+   "raw": 63,
+   "kept": 21,
+   "skipped_never": 0
+  },
+  "easylist-annoyances": {
+   "raw": 939,
+   "kept": 512,
+   "skipped_never": 0
+  },
+  "ublock-annoyances": {
+   "raw": 6,
+   "kept": 4,
+   "skipped_never": 0
+  },
+  "adguard-other-annoyances": {
+   "raw": 15,
+   "kept": 3,
+   "skipped_never": 0
+  },
+  "adguard-popup-overlays": {
+   "raw": 420,
+   "kept": 234,
+   "skipped_never": 0
+  },
+  "adguard-mobile-app-banners": {
+   "raw": 2,
+   "kept": 2,
+   "skipped_never": 0
+  },
+  "adguard-widgets": {
+   "raw": 257,
+   "kept": 161,
+   "skipped_never": 0
+  },
+  "adguard-cookies": {
+   "raw": 188,
+   "kept": 110,
+   "skipped_never": 0
+  },
+  "ublock-cookies-easylist": {
+   "raw": 1,
+   "kept": 1,
+   "skipped_never": 0
+  },
+  "fanboy-cookiemonster": {
+   "raw": 320,
+   "kept": 0,
+   "skipped_never": 0
+  },
+  "fanboy-ai-suggestions": {
+   "raw": 20,
+   "kept": 19,
+   "skipped_never": 0
+  },
+  "yok-annoyance": {
+   "raw": 53,
+   "kept": 34,
+   "skipped_never": 1
+  },
+  "yok-adult-annoyance": {
+   "raw": 14,
+   "kept": 14,
+   "skipped_never": 0
+  }
+ }
+}
