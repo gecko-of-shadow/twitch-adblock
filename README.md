@@ -47,7 +47,7 @@ Yes. It runs inside Chrome. No program is installed on your computer. No account
 
 - Picture quality may dip briefly on Twitch during an ad break. Playback continues.
 - Ads baked into a YouTube video file still play.
-- Development: `deno test --no-lock test/` · `bash scripts/release-gate.sh` · `bash scripts/pack-zip.sh`
+- Development: `deno test --no-lock --allow-read --allow-run --allow-env test/` · `bash scripts/release-gate.sh` · `bash scripts/pack-zip.sh`
 
 ---
 

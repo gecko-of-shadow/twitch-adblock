@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- "Allow this page" works again. Chrome hides tab addresses from extensions without the `tabs` permission, so the button was always greyed out ("Open a normal http(s) page"). The popup now asks the page's own content script for its address. No new permission.
+- After the first list refresh, the YouTube doubleclick block is kept. The refresh copied only the allow rules and the extra tracker rule into the new rule set, so `doubleclick.net` loaded on YouTube (and in YouTube embeds on other sites) once the packed rules were switched off.
+- If EasyList fails to download on a refresh, the hide list is left as it was. Before, EasyPrivacy alone replaced it (a couple of selectors instead of about 13,600) and it stayed that way until EasyList came back.
+- New test: fails 30 days before the bundled uBO YouTube `videoplayback` rule starts blocking normal videos (2027-01-15). Re-run `scripts/sync-ubo-youtube.mjs` before then.
+- README: the test command needs `--allow-read --allow-run --allow-env`.
+
 ## 0.2.21
 
 - YouTube: a video stuck at 0:00 after its blocked ad (decoy) streams failed recovers sooner. When those streams failed and no video data has loaded, the one automatic reload now comes 7s after the last sign of progress instead of 15s. In replays of a real stuck start, the reload came at about 9s (about 12s when YouTube also sent its usual early "retry later" reply) instead of about 17s, and playback resumed about 2s later.
