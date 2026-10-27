@@ -13,11 +13,11 @@
       DKGGGGGOOOGGKTTD
       DKGGGGGGGGGGKTTD
       DKKKKGGGKKKKKKKD
-      DTTTKGGGKBwwwBKD
+      DTTTKGGGKwwwwBKD
       DTTKGLGGKwwBBwKD
       DTTKGLGGKwBwBwKD
       .DTKGLGGKwBBwwK.
-      .DKGGGGGKBwwwBK.
+      .DKGGGGGKBwwwwK.
       ..KKKGGGGKBBBK..
       ...DDKKKKKKKKD..
       .....DDDDDD.....
@@ -53,7 +53,7 @@
     <path class="eye" d="M7 3h1v1h-1zM9 3h1v1h-1zM7 4h3v1h-3z"/>
     <path class="eye lid" d="M7 2h3v1h-3z"/>
     <path class="ink" d="M8 3h1v1h-1z"/>
-    <path class="shield" d="M9 8h1v1h-1zM13 8h1v1h-1zM11 9h2v1h-2zM10 10h1v1h-1zM12 10h1v1h-1zM10 11h2v1h-2zM9 12h1v1h-1zM13 12h1v1h-1zM10 13h3v1h-3z"/>
-    <path class="mark" d="M10 8h3v1h-3zM9 9h2v1h-2zM13 9h1v1h-1zM9 10h1v1h-1zM11 10h1v1h-1zM13 10h1v1h-1zM9 11h1v1h-1zM12 11h2v1h-2zM10 12h3v1h-3z"/>
+    <path class="shield" d="M13 8h1v1h-1zM11 9h2v1h-2zM10 10h1v1h-1zM12 10h1v1h-1zM10 11h2v1h-2zM9 12h1v1h-1zM10 13h3v1h-3z"/>
+    <path class="mark" d="M9 8h4v1h-4zM9 9h2v1h-2zM13 9h1v1h-1zM9 10h1v1h-1zM11 10h1v1h-1zM13 10h1v1h-1zM9 11h1v1h-1zM12 11h2v1h-2zM10 12h4v1h-4z"/>
   </g>
 </svg>
