@@ -40,4 +40,5 @@ jobs:
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.sha }}
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python3 scripts/privacy-check.py
+          PYTHONUNBUFFERED: "1"
+        run: python3 -u scripts/privacy-check.py

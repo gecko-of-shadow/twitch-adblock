@@ -6,7 +6,9 @@ one case-insensitive expression per line. If that variable is missing or
 empty, personal-string checks are skipped and the job stays green with a
 warning annotation. Obvious secrets are always checked.
 
-Prints file paths and line numbers only. Does not print patterns or matches.
+Prints file paths and line numbers only. Does not print patterns, matches,
+or the environment block. Each non-empty pattern line is registered with
+::add-mask:: before any other output.
 """
 
 import os
@@ -99,15 +101,33 @@ def changed_files(base, head):
     return files
 
 
-def load_personal_patterns():
-    raw = os.environ.get("PRIVACY_PATTERNS", "")
+def escape_command_data(value):
+    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def publish_masks(raw):
+    """Register pattern lines with the log masker. This must be the first output."""
+    for line in raw.splitlines():
+        if line.startswith("\ufeff"):
+            line = line.lstrip("\ufeff")
+        cleaned = line.strip()
+        if cleaned == "":
+            continue
+        print(f"::add-mask::{escape_command_data(cleaned)}", flush=True)
+        if cleaned != line:
+            print(f"::add-mask::{escape_command_data(line)}", flush=True)
+
+
+def load_personal_patterns(raw):
     if raw.strip() == "":
         emit("warning", "PRIVACY_PATTERNS secret is not set")
         write_summary("PRIVACY_PATTERNS secret is not set. Personal-string checks were skipped.\n")
         return []
     patterns = []
     for index, line in enumerate(raw.splitlines(), start=1):
-        line = line.strip().lstrip("\ufeff")
+        if line.startswith("\ufeff"):
+            line = line.lstrip("\ufeff")
+        line = line.strip()
         if line == "":
             continue
         try:
@@ -244,7 +264,15 @@ def scan_diff(diff, personal, findings):
 
 
 def main():
-    personal = load_personal_patterns()
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, OSError, ValueError):
+        pass
+    # Drop the secret from the environment before any other work so later
+    # output, tracebacks, and child processes cannot dump it.
+    raw = os.environ.pop("PRIVACY_PATTERNS", "")
+    publish_masks(raw)
+    personal = load_personal_patterns(raw)
     if personal is None:
         return 1
     base, head = resolve_range()
