@@ -40,11 +40,41 @@ function installTwitchDirectoryAds(target) {
     element.style.setProperty("display", "none", "important");
   }
 
+  // The banner slot and [aria-label="Advertisement"] are hidden by CSS alone.
+  // Only the grid Ad card needs script: CSS can't reach from the feedback
+  // button up to its card. A button whose card was found is not looked at
+  // again; one with no boundary yet is retried a few times as the grid fills.
+  const MAX_CARD_TRIES = 10;
+  const done = typeof WeakSet === "function" ? new WeakSet() : null;
+  const tries = typeof WeakMap === "function" ? new WeakMap() : null;
+
+  // True once the button needs no more looks (card hidden, or out of tries).
+  function hideCardOf(button) {
+    if (done && done.has(button)) return true;
+    const card = cardFor(button);
+    if (card) {
+      hide(card);
+      if (done) done.add(button);
+      return true;
+    }
+    if (!tries || !done) return false;
+    const n = (tries.get(button) || 0) + 1;
+    tries.set(button, n);
+    if (n < MAX_CARD_TRIES) return false;
+    done.add(button);
+    return true;
+  }
+
+  function feedbackButtonsIn(node, out) {
+    if (!node || node.nodeType !== 1) return out;
+    if (node.matches && node.matches(FEEDBACK_SELECTOR)) out.push(node);
+    if (node.querySelectorAll) out.push(...node.querySelectorAll(FEEDBACK_SELECTOR));
+    return out;
+  }
+
   function sweep(root) {
     if (!root || typeof root.querySelectorAll !== "function") return;
-    root.querySelectorAll(BANNER_SELECTOR).forEach(hide);
-    root.querySelectorAll('[aria-label="Advertisement"]').forEach(hide);
-    root.querySelectorAll(FEEDBACK_SELECTOR).forEach((button) => hide(cardFor(button)));
+    root.querySelectorAll(FEEDBACK_SELECTOR).forEach(hideCardOf);
   }
 
   target.BANNER_SELECTOR = BANNER_SELECTOR;
@@ -52,7 +82,40 @@ function installTwitchDirectoryAds(target) {
   target.STYLE_ID = STYLE_ID;
   target.CSS = CSS;
   target.cardFor = cardFor;
+  target.hideCardOf = hideCardOf;
+  target.feedbackButtonsIn = feedbackButtonsIn;
   target.hideDirectoryAds = sweep;
+}
+
+// Mutation batches only queue the feedback buttons inside added nodes (a
+// small subtree each, and chat on channel pages adds many); card lookups run
+// at most once per animation frame. Buttons without a card yet are retried on
+// the next frame that follows a mutation.
+function watchDirectoryAds(api, doc, style, raf) {
+  const pending = new Set();
+  const retry = new Set();
+  let scheduled = false;
+  const flush = () => {
+    scheduled = false;
+    if (!style.isConnected) (doc.documentElement || doc.head || doc).appendChild(style);
+    const buttons = Array.from(pending);
+    pending.clear();
+    for (const button of buttons) {
+      if (!button.isConnected) continue;
+      if (!api.hideCardOf(button)) retry.add(button);
+    }
+  };
+  return (records) => {
+    for (const button of retry) pending.add(button);
+    retry.clear();
+    for (const record of records) {
+      for (const node of record.addedNodes || []) api.feedbackButtonsIn(node, []).forEach((b) => pending.add(b));
+    }
+    if (!scheduled) {
+      scheduled = true;
+      raf(flush);
+    }
+  };
 }
 
 function startTwitchDirectoryAds() {
@@ -72,7 +135,8 @@ function startTwitchDirectoryAds() {
   (document.documentElement || document.head || document).appendChild(style);
   api.hideDirectoryAds(document);
   if (typeof MutationObserver !== "function") return;
-  const observer = new MutationObserver(() => api.hideDirectoryAds(document));
+  const raf = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (fn) => setTimeout(fn, 16);
+  const observer = new MutationObserver(watchDirectoryAds(api, document, style, raf));
   observer.observe(document.documentElement, { childList: true, subtree: true });
 }
 

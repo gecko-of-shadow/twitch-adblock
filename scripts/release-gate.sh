@@ -2,9 +2,10 @@
 # Release smoke for twitch-adblock: package, security, hosts, deno, light fuzz.
 # Local only — does not phone home. Requires deno, python3, and ripgrep (rg).
 #
-# General-adblock beta (Phase 0): allows declarativeNetRequest + storage, packs
-# src/rules/*, and refuses stronger host/read permissions, background workers,
-# and any chrome.* use in stream playback files.
+# General-adblock beta (Phase 0): allows declarativeNetRequest + storage (plus
+# unlimitedStorage for the list cache and alarms for a one-shot refresh retry),
+# packs src/rules/*, and refuses stronger host/read permissions, repeating
+# timers, and any chrome.* use in stream playback files.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -21,7 +22,7 @@ Usage:
 
 Defaults: --dir is the repo root, --expect-version is read from that tree's manifest.
 
-Checks: shippable file allowlist, narrow permissions (DNR+storage only), Twitch/YouTube
+Checks: shippable file allowlist, narrow permissions (DNR+storage, unlimitedStorage, alarms), Twitch/YouTube
 host coverage, stream-site DNR exclusions, no eval/innerHTML/identity/trackers outside
 rules, no chrome.* in playback files, deno test (when test/ is present), vendor parse.
 EOF
@@ -106,6 +107,50 @@ REQUIRED=(
   icons/icon48-off.png
   icons/icon128-off.png
 )
+# Plus every file the manifest loads, the service worker's importScripts
+# (relative to the worker), and the popup page's scripts, so a new or renamed
+# runtime file can't go missing from a package unnoticed.
+MANIFEST_FILES="$(python3 - "$PKG" <<'PY'
+import json, pathlib, posixpath, re, sys
+root = pathlib.Path(sys.argv[1])
+try:
+    m = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+except Exception as e:
+    print("manifest.json")  # reported missing / unreadable below
+    sys.exit(0)
+out = []
+for cs in m.get("content_scripts") or []:
+    out += (cs.get("js") or []) + (cs.get("css") or [])
+for war in m.get("web_accessible_resources") or []:
+    out += [r for r in war.get("resources") or [] if "*" not in r]
+for rr in (m.get("declarative_net_request") or {}).get("rule_resources") or []:
+    out.append(rr.get("path"))
+action = m.get("action") or {}
+out += list((action.get("default_icon") or {}).values()) + list((m.get("icons") or {}).values())
+pages = [action.get("default_popup"), m.get("options_page")]
+sw = (m.get("background") or {}).get("service_worker")
+if sw:
+    out.append(sw)
+    p = root / sw
+    if p.is_file():
+        for call in re.findall(r"importScripts\(([^)]*)\)", p.read_text(encoding="utf-8", errors="replace")):
+            for name in re.findall(r"[\"']([^\"']+)[\"']", call):
+                out.append(posixpath.normpath(posixpath.join(posixpath.dirname(sw), name)))
+for page in filter(None, pages):
+    out.append(page)
+    p = root / page
+    if p.is_file():
+        for src in re.findall(r"<script[^>]*\bsrc=[\"']([^\"']+)[\"']", p.read_text(encoding="utf-8", errors="replace")):
+            out.append(posixpath.normpath(posixpath.join(posixpath.dirname(page), src)))
+for f in sorted(set(x.lstrip("/") for x in out if x)):
+    print(f)
+PY
+)"
+# tr: Windows python3 prints CRLF.
+mapfile -t _MANIFEST_REQUIRED < <(printf '%s\n' "$MANIFEST_FILES" | tr -d '\r')
+for f in "${_MANIFEST_REQUIRED[@]}"; do
+  [[ -n "$f" && " ${REQUIRED[*]} " != *" $f "* ]] && REQUIRED+=("$f")
+done
 # Shippable paths. Cosmetic hide, popup worker, list rules, and stream exclusion module.
 ALLOWED_RE='^(manifest\.json|src/popup\.html|src/popup\.js|src/general-exclude-hosts\.js|src/general-settings\.js|src/general-background\.js|src/general/(cosmetic|cosmetic-parse|exclusions|toggles|update)\.js|src/vendor/video-swap-new\.user\.js|src/vendor/LICENSE-TwitchAdSolutions|src/vendor/README\.md|src/vendor/ubo-youtube(-isolated)?\.js|src/vendor/ubo-youtube\.css|src/vendor/ubo-youtube-meta\.json|src/vendor/LICENSE-uBlock\.md|src/vendor/LICENSE-uBlock-GPLv3\.txt|src/rules/ubo-youtube-network\.json|src/youtube\.js|src/kick\.js|src/rules/general-network\.json|src/rules/CREDIT-EasyList\.txt|src/rules/LICENSES\.md|src/rules/README\.md|src/rules/meta\.json|src/rules/dnr-merge-meta\.json|src/rules/cosmetic-sample\.json|src/rules/cosmetic-rules\.json|src/cosmetic\.js|src/cosmetic\.css|src/cosmetic-hide\.css|src/youtube-ads\.css|src/twitch-directory-ads\.js|src/LICENSE-EasyList\.txt|icons/icon(16|48|128)(-working|-off)?\.png)$'
 
@@ -245,7 +290,10 @@ perms = m.get("permissions") or []
 if not isinstance(perms, list):
     bad.append(f"permissions must be a list, got {type(perms).__name__}")
     perms = []
-allowed_perms = {"declarativeNetRequest", "storage"}
+# unlimitedStorage: the refreshed list state is ~7 MB (storage.local quota is 10 MB).
+# alarms: one-shot retry of a startup list refresh Chrome cut off.
+# Neither shows an install warning.
+allowed_perms = {"declarativeNetRequest", "storage", "unlimitedStorage", "alarms"}
 forbidden_perms = {
     "declarativeNetRequestWithHostAccess",
     "declarativeNetRequestFeedback",
@@ -306,7 +354,7 @@ if bg.get("service_worker") != "src/general-background.js":
 if bad:
     print("FAIL  privileged / permission fields:", "; ".join(bad))
     sys.exit(1)
-print("PASS  permissions are storage + declarativeNetRequest; UI worker only; no host access")
+print("PASS  permissions are storage + declarativeNetRequest (+ unlimitedStorage, alarms); UI worker only; list hosts only")
 
 scripts = m.get("content_scripts") or []
 twitch = next((s for s in scripts if "src/vendor/video-swap-new.user.js" in (s.get("js") or [])), None)
@@ -537,7 +585,7 @@ for rel in playback:
 allowed = {
     "src/popup.js": {"runtime", "tabs", "storage"},
     "src/general-settings.js": set(),
-    "src/general-background.js": {"runtime", "storage", "action", "declarativeNetRequest"},
+    "src/general-background.js": {"runtime", "storage", "action", "declarativeNetRequest", "alarms"},
     "src/cosmetic.js": {"runtime", "storage"},
 }
 for rel, ok_ns in allowed.items():
@@ -550,10 +598,14 @@ for rel, ok_ns in allowed.items():
     for match in re.finditer(r"\b(chrome|browser)\.([A-Za-z0-9_]+)", text):
         if match.group(1) != "chrome" or match.group(2) not in ok_ns:
             bad.append(f"{rel}: {match.group(0)}")
-# No auto-fetch timers in the UI worker.
+# No polling timers in the UI worker: lists refresh at startup and on Update.
+# The only alarm allowed is the one-shot retry of a cut-off startup refresh.
 bg = (root / "src/general-background.js").read_text(errors="replace")
-if re.search(r"\bchrome\.alarms\b|\bsetInterval\b", bg):
-    bad.append("src/general-background.js must not schedule list fetches")
+if re.search(r"\bsetInterval\b|periodInMinutes", bg):
+    bad.append("src/general-background.js must not schedule repeating list fetches")
+creates = re.findall(r"chrome\.alarms\.create\(([^)]*)\)", bg)
+if len(creates) > 1 or any("RETRY_ALARM" not in c or "delayInMinutes" not in c for c in creates):
+    bad.append("src/general-background.js: only the one-shot list retry alarm is allowed, got " + repr(creates))
 if bad:
     print("FAIL  extension API scope:")
     print("\n".join(bad))

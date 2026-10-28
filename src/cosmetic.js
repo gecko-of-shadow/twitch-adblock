@@ -195,32 +195,29 @@ function installCosmeticHide(api) {
 
     sync();
 
+    // No storage change listener here: a list refresh writes several MB,
+    // and Chrome would copy every change into every frame of every open page.
+    // The popup messages open tabs after the switch, "Allow this page" or
+    // Update; a quiet background refresh applies on the next page load.
     // The popup can't read tab URLs (no "tabs" permission), so the top frame
-    // tells it which origin "Allow this page" should toggle.
+    // also tells it which origin "Allow this page" should toggle.
     try {
       const onMessage = opts.onMessage || (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage);
       const top = opts.isTop != null ? opts.isTop : (typeof window !== "undefined" && window.top === window);
-      if (top && onMessage && onMessage.addListener) {
+      if (onMessage && onMessage.addListener) {
         onMessage.addListener((msg, _sender, sendResponse) => {
-          if (!msg || msg.type !== "pageOrigin") return;
+          if (!msg) return;
+          if (msg.type === "generalSync") {
+            sync();
+            return;
+          }
+          if (msg.type !== "pageOrigin" || !top) return;
           sendResponse({ origin: pageOrigin(opts.hostname, opts.href != null ? opts.href : (typeof location !== "undefined" ? location.href : "")) });
         });
       }
     } catch {
-      // Popup falls back to "Open a normal http(s) page".
-    }
-
-    try {
-      const onChanged = opts.onChanged || (typeof chrome !== "undefined" && chrome.storage && chrome.storage.onChanged);
-      if (onChanged && onChanged.addListener) {
-        onChanged.addListener((changes, area) => {
-          if (area && area !== "local") return;
-          if (!changes || (!changes[STORAGE_KEY] && !changes[ALLOWED_ORIGINS_KEY] && !changes.cosMeta)) return;
-          sync();
-        });
-      }
-    } catch {
-      // Storage watch is optional; initial sync already ran.
+      // Popup falls back to "Open a normal http(s) page"; pages pick up
+      // setting changes on their next load.
     }
   }
 

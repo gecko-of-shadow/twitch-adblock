@@ -22,7 +22,7 @@ Deno.test("general popup defaults on and never auto-fetches lists", () => {
   assert(popupSource.includes("generalEnabled: true") || popupSource.includes("generalEnabled: true,"), "storage default ON");
   assert(popupSource.includes("updateLists") || popupHtml.includes("Update lists"), "manual Update control");
   assert(!popupSource.includes("chrome.alarms"), "no alarms in popup");
-  assert(!backgroundSource.includes("chrome.alarms"), "no alarms in background");
+  assert(!/periodInMinutes/.test(backgroundSource), "no repeating alarms in background");
   assert(!backgroundSource.includes("setInterval"), "no interval polling for lists");
   assert(backgroundSource.includes("manual"), "update path is manual");
 });
@@ -60,4 +60,51 @@ Deno.test("storage key contract matches settings module", () => {
   assert(settingsSource.includes('listUpdateRequestAt: "generalListUpdateRequestAt"'), "manual update flag");
   assert(settingsSource.includes('RULESET_ID = "general"'), "ruleset id general");
   assert(backgroundSource.includes("importScripts(\"general-settings.js\", \"general/update.js\", \"general/cosmetic-parse.js\")"), "worker loads shared settings");
+});
+
+Deno.test("opening the popup sends nothing to the worker; switch, allow and Update tell open tabs to re-read", async () => {
+  const handlers = {};
+  const element = (id) => ({ id, dataset: {}, textContent: "", checked: true, disabled: false, src: "",
+    setAttribute() {}, addEventListener(type, fn) { handlers[id + ":" + type] = fn; } });
+  const els = {};
+  const document = { getElementById: (id) => (els[id] = els[id] || element(id)), querySelector: () => null };
+  const sent = [];
+  const tabMessages = [];
+  const store = { generalEnabled: true, generalAllowedOrigins: [] };
+  const chrome = {
+    runtime: { lastError: undefined, getManifest: () => ({ version: "0.0.0" }),
+      sendMessage(msg, cb) { sent.push(msg.type); cb({ ok: true }); } },
+    storage: { local: {
+      get(_k, cb) { cb(structuredClone(store)); },
+      set(items, cb) { Object.assign(store, items); cb(); },
+    } },
+    tabs: {
+      query(q, cb) { cb(q.active ? [{ id: 7 }] : [{ id: 7 }, { id: 8 }, {}]); },
+      sendMessage(id, msg, opts, cb) {
+        if (typeof opts === "function") { cb = opts; opts = undefined; }
+        if (msg.type === "pageOrigin") cb({ origin: "https://news.example" });
+        else { tabMessages.push([id, msg.type]); cb(); }
+      },
+    },
+  };
+  new Function("chrome", "document", popupSource)(chrome, document);
+  await new Promise((r) => setTimeout(r, 20));
+  assertEquals(sent, [], "popup open: no applyGeneralState round trip");
+
+  els["general-enabled"].checked = false;
+  await handlers["general-enabled:change"]();
+  assertEquals(tabMessages, [[7, "generalSync"], [8, "generalSync"]], "switch: every tab told to re-read");
+  assertEquals(sent, ["applyGeneralState"], "switch still applies DNR");
+
+  tabMessages.length = 0;
+  els["general-enabled"].checked = true;
+  await handlers["general-enabled:change"]();
+  tabMessages.length = 0;
+  await handlers["allow-page:click"]();
+  assertEquals(store.generalAllowedOrigins, ["https://news.example"], "origin saved");
+  assertEquals(tabMessages.length, 2, "allow: tabs told to re-read");
+
+  tabMessages.length = 0;
+  await handlers["update-lists:click"]();
+  assertEquals(tabMessages.length, 2, "Update: tabs told to re-read");
 });

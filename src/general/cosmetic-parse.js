@@ -181,6 +181,9 @@
   // only its own few keys plus the generic sheet.
   const KEY_GENERIC = "cosG";
   const KEY_META = "cosMeta";
+  // Names of every key above, for clean-up. Only the worker reads it; every
+  // frame reads cosMeta, so the ~8k-name list is kept out of it.
+  const KEY_KEYS = "cosKeys";
   const PREFIX_SITE = "cosS:";
   const PREFIX_EXC = "cosE:";
 
@@ -191,7 +194,8 @@
     items[KEY_GENERIC] = (data.generic || []).join("\n");
     for (const [h, sels] of Object.entries(data.sites || {})) items[PREFIX_SITE + h] = sels;
     for (const [h, sels] of Object.entries(data.exceptions || {})) items[PREFIX_EXC + h] = sels;
-    items[KEY_META] = Object.assign({ keys: Object.keys(items) }, meta || {});
+    items[KEY_KEYS] = Object.keys(items);
+    items[KEY_META] = Object.assign({}, meta || {});
     return items;
   }
 
@@ -221,7 +225,7 @@
   }
 
   root.GeneralCosmeticParse = {
-    MAX_SELECTOR_LEN, KEY_GENERIC, KEY_META, PREFIX_SITE, PREFIX_EXC, HIDE,
+    MAX_SELECTOR_LEN, KEY_GENERIC, KEY_META, KEY_KEYS, PREFIX_SITE, PREFIX_EXC, HIDE,
     sanitizeSelector, normalizeHost, parseCosmetic, mergeCosmetic, candidateHosts,
     cssForSelectors, toStorage, keysForHost, buildPageCss,
   };
