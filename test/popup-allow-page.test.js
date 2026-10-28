@@ -15,7 +15,14 @@ function assertEquals(actual, expected, label) {
   if (left !== right) throw new Error(`${label || "expected equal"}\n${left}\n${right}`);
 }
 
-const installCosmeticHide = new Function(`${cosmeticSource}\nreturn installCosmeticHide;`)();
+// Like a browser: cosmetic.js reads location, window and chrome, and start() gets no options.
+const loadCosmetic = new Function(
+  "location",
+  "window",
+  "chrome",
+  "fetch",
+  `${cosmeticSource}\nreturn installCosmeticHide;`,
+);
 const POPUP_IDS = [...popupHtml.matchAll(/id="([^"]+)"/g)].map((m) => m[1]);
 const NO_RECEIVER = "Could not establish connection. Receiving end does not exist.";
 
@@ -42,29 +49,45 @@ function fakeElement() {
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-// pageHref: the page in the active tab. Its cosmetic.js only starts on http(s) pages
-// that are not stream sites (manifest matches + exclude_matches); `scripted: false`
-// models a page with no content script (opened before the extension loaded, chrome://).
-async function openPopup({ pageHref, scripted = true, stored = {} }) {
+// Starts cosmetic.js in one frame and returns that frame's message listeners.
+function startFrame(href, isTop) {
+  const listeners = [];
+  const topWindow = {};
+  const win = isTop ? topWindow : { top: topWindow };
+  if (isTop) topWindow.top = topWindow;
+  const url = new URL(href);
+  const pageChrome = {
+    runtime: {
+      lastError: undefined,
+      getURL: (path) => "chrome-extension://test/" + path,
+      onMessage: { addListener(fn) { listeners.push(fn); } },
+    },
+    storage: {
+      local: { get: (_keys, cb) => cb({}) },
+      onChanged: { addListener() {} },
+    },
+  };
+  const page = {};
+  loadCosmetic({ href, hostname: url.hostname }, win, pageChrome, () => Promise.resolve({ ok: false }))(page);
+  page.start();
+  return listeners;
+}
+
+// pageHref: the page in the active tab, with an ad iframe from another origin inside it.
+// cosmetic.js only starts on http(s) pages that are not stream sites (manifest matches +
+// exclude_matches); `scripted: false` models a page with no content script (opened before
+// the extension loaded, chrome://). `answerLater` holds the reply until `answer()`.
+async function openPopup({ pageHref, scripted = true, stored = {}, answerLater = false }) {
   const storage = Object.assign({}, stored);
-  const pageListeners = [];
+  // frameId -> listeners. The subframe comes first, so it would win a broadcast.
+  const frames = new Map();
+  if (scripted) {
+    frames.set(3, startFrame("https://ads.example.net/slot?id=9", false));
+    frames.set(0, startFrame(pageHref, true));
+  }
   const sent = [];
   const background = [];
-
-  if (scripted) {
-    const page = {};
-    installCosmeticHide(page);
-    const url = new URL(pageHref);
-    page.start({
-      hostname: url.hostname,
-      href: pageHref,
-      isTop: true,
-      getLocal: (_keys, cb) => cb({}),
-      fetch: () => Promise.resolve({ ok: false }),
-      onChanged: { addListener() {} },
-      onMessage: { addListener(fn) { pageListeners.push(fn); } },
-    });
-  }
+  let pending = null;
 
   const chrome = {
     runtime: {
@@ -99,11 +122,15 @@ async function openPopup({ pageHref, scripted = true, stored = {} }) {
           options = {};
         }
         sent.push({ tabId, msg, options });
-        const toTopFrame = options && options.frameId === 0;
+        const targets = tabId !== 7
+          ? []
+          : options && typeof options.frameId === "number"
+          ? [frames.get(options.frameId) || []]
+          : [...frames.values()];
         let answered = false;
         let reply;
-        if (tabId === 7 && toTopFrame) {
-          for (const fn of pageListeners) {
+        for (const listeners of targets) {
+          for (const fn of listeners) {
             fn(msg, { id: "extension" }, (r) => {
               if (!answered) {
                 answered = true;
@@ -112,9 +139,13 @@ async function openPopup({ pageHref, scripted = true, stored = {} }) {
             });
           }
         }
-        chrome.runtime.lastError = answered ? undefined : { message: NO_RECEIVER };
-        cb(reply);
-        chrome.runtime.lastError = undefined;
+        const deliver = () => {
+          chrome.runtime.lastError = answered ? undefined : { message: NO_RECEIVER };
+          cb(reply);
+          chrome.runtime.lastError = undefined;
+        };
+        if (answerLater) pending = deliver;
+        else deliver();
       },
     },
   };
@@ -130,12 +161,27 @@ async function openPopup({ pageHref, scripted = true, stored = {} }) {
   new Function("document", "chrome", popupSource)(document, chrome);
   await settle();
   await settle();
-  return { button: elements["allow-page"], status: elements["page-status"], storage, sent, background };
+  return {
+    button: elements["allow-page"],
+    status: elements["page-status"],
+    toggle: elements["general-enabled"],
+    frames,
+    storage,
+    sent,
+    background,
+    async answer() {
+      assert(pending, "popup asked the page");
+      pending();
+      await settle();
+      await settle();
+    },
+  };
 }
 
 Deno.test("Allow this page works on a normal https page without the tabs permission", async () => {
   const p = await openPopup({ pageHref: "https://news.example.com/story?id=1#top" });
   assertEquals(p.sent.map((s) => s.options), [{ frameId: 0 }], "popup asks only the top frame");
+  assertEquals(p.frames.get(3).length, 0, "the ad iframe does not listen");
   assertEquals(p.button.disabled, false, "button is clickable");
   assertEquals(p.button.textContent, "Allow this page");
   assertEquals(p.button.attrs["aria-pressed"], "false");
@@ -174,6 +220,27 @@ Deno.test("a page with no content script stays greyed out and says why", async (
 
   const stream = await openPopup({ pageHref: "https://www.twitch.tv/somechannel" });
   assertEquals(stream.button.disabled, true, "stream sites have no general script to answer");
+});
+
+Deno.test("a slow page doesn't hold up the rest of the popup", async () => {
+  const p = await openPopup({
+    pageHref: "https://busy.example.com/",
+    stored: { generalEnabled: false },
+    answerLater: true,
+  });
+  assertEquals(p.toggle.checked, false, "stored master switch shows before the page answers");
+  assertEquals(p.button.disabled, true);
+  assertEquals(p.status.textContent, "Checking this page…");
+  await p.button.fire("click");
+  assertEquals(p.storage.generalAllowedOrigins, undefined, "a click while waiting saves nothing");
+
+  p.toggle.checked = true;
+  await p.toggle.fire("change");
+  assertEquals(p.storage.generalEnabled, true, "the switch works while waiting");
+  assertEquals(p.status.textContent, "Checking this page…");
+  await p.answer();
+  assertEquals(p.button.disabled, false, "button turns on once the page answers");
+  assertEquals(p.status.textContent, "Lists apply on this page.");
 });
 
 Deno.test("the allow fix adds no permission", () => {
