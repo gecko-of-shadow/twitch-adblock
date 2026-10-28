@@ -218,8 +218,6 @@ function listDeps() {
   };
 }
 
-// Cosmetic rules live in chrome.storage.local, one key per host (see
-// general/cosmetic-parse.js) so each page reads only its own keys.
 let bundledExtras = null;
 async function loadBundledCosmetic() {
   const res = await fetch(chrome.runtime.getURL("src/rules/cosmetic-rules.json"));
@@ -313,7 +311,6 @@ async function updateLists() {
   return { ok: !!result.ok, result };
 }
 
-// One quiet refresh per browser session, ~5s after the worker starts.
 function scheduleStartupRefresh() {
   setTimeout(() => {
     const session = chrome.storage && chrome.storage.session;
@@ -365,7 +362,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.source !== "twitch-adblock-general") return;
-  // Popup only. A content-script sender carries a tab; it must never trigger a manual refresh.
+  // sender.tab is a content script. Only the popup may refresh.
   if (!sender || sender.id !== chrome.runtime.id || sender.tab) return;
   if (message.type === "applyGeneralState") {
     applyGeneralState().then(sendResponse);

@@ -1,7 +1,6 @@
 /**
- * Shared storage keys + helpers for general (list) adblock UI.
- * Consumed by popup.js and general-background.js.
- * DNR / list / cosmetic agents should use the same keys.
+ * Storage keys for the general-list UI. general-background.js imports this file.
+ * popup.js repeats the same keys: popup.html may only load popup.js.
  */
 (function (root) {
   const STORAGE_KEYS = {

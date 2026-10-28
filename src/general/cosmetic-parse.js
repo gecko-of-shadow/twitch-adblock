@@ -58,8 +58,6 @@
 
   const LINE_RE = /^([^#]*)(#@#|##|#\?#|#@\?#)(.+)$/;
 
-  // Returns { generic: [sel], sites: {host: [sel]}, exceptions: {host: [sel]},
-  //           genericExceptions: [sel], stats }
   function parseCosmetic(text) {
     const genericSet = new Set();
     const sites = new Map();
@@ -201,7 +199,6 @@
     return keys;
   }
 
-  // Build the page's stylesheet from what storage returned for keysForHost().
   function buildPageCss(hostname, stored, fallbackGenericCss) {
     const exc = new Set();
     const siteSels = [];
