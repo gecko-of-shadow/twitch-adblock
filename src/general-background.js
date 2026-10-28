@@ -311,6 +311,7 @@ async function updateLists() {
   return { ok: !!result.ok, result };
 }
 
+// One quiet refresh per browser session, ~5s after the worker starts.
 function scheduleStartupRefresh() {
   setTimeout(() => {
     const session = chrome.storage && chrome.storage.session;
