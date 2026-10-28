@@ -109,7 +109,8 @@
       allowPage.disabled = true;
       allowPage.setAttribute("aria-pressed", "false");
       allowPage.textContent = "Allow this page";
-      pageStatus.textContent = "Open a normal http(s) page to allow it.";
+      // Pages open from before the extension loaded have no content script to ask.
+      pageStatus.textContent = "Open a normal http(s) page to allow it. Already on one? Reload it.";
     } else if (isHardExcludedOrigin(origin)) {
       allowPage.disabled = true;
       allowPage.setAttribute("aria-pressed", "false");

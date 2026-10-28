@@ -168,6 +168,7 @@ Deno.test("a page with no content script stays greyed out and says why", async (
   const p = await openPopup({ pageHref: "https://news.example.com/", scripted: false });
   assertEquals(p.button.disabled, true);
   assert(p.status.textContent.startsWith("Open a normal http(s) page"), "explains the greyed button");
+  assert(p.status.textContent.includes("Reload it"), "tabs open from before an install or update need a reload");
   await p.button.fire("click");
   assertEquals(p.storage.generalAllowedOrigins, undefined, "nothing saved");
 
