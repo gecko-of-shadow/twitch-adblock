@@ -202,9 +202,9 @@ function installGeneralAdblockUpdate(target) {
     }
     const now = deps.now();
     if (!shouldRun(state, now, manual)) return { ok: true, ran: false, reason: "throttled" };
-    // lastRunAt is written only once the downloads are done, and each list is
-    // saved as it lands: if the worker is stopped part way, the next start
-    // retries and fetches only the lists that are still due.
+    // lastRunAt is written only once the downloads are done, and each newly
+    // downloaded list is saved as it lands: if the worker is stopped part way,
+    // the next start retries and fetches only the lists that are still due.
     const lists = Object.assign({}, state.lists || {});
     let saveError = "";
     const saveLists = async () => {
@@ -254,8 +254,9 @@ function installGeneralAdblockUpdate(target) {
           if (!res) throw new Error(tried.join("; "));
           if (tried.length) mirrorNotes[src.name] = tried.join("; ") + " (used " + new URL(usedUrl).hostname + ")";
           if (res.status === 304 && meta && Array.isArray(meta.domains)) {
+            // Not saved here: re-asking for an unchanged list after a cut-off
+            // costs almost nothing, and each save rewrites the whole state.
             lists[src.name] = Object.assign({}, meta, { fetchedAt: now });
-            await saveLists();
             continue;
           }
           if (!res.ok) throw new Error("HTTP " + res.status);
