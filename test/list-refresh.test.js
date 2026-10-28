@@ -208,3 +208,55 @@ Deno.test("offline, garbage, and empty lists keep the last good copy", async () 
     assert(st.lastErrors[name], name + " recorded " + JSON.stringify(st.lastErrors));
   }
 });
+
+Deno.test("list fetches give up before Chrome's 30s service-worker fetch limit", () => {
+  assert(U.FETCH_TIMEOUT_MS > 0 && U.FETCH_TIMEOUT_MS <= 25000, String(U.FETCH_TIMEOUT_MS));
+});
+
+Deno.test("a worker stopped mid-refresh keeps the lists it downloaded; the next start fetches only the rest", async () => {
+  // Chrome stops the worker while the 4th list is downloading: that fetch never answers.
+  const d = fakeDeps({ responses: ok });
+  let served = 0;
+  let stopped = false;
+  const stall = [];
+  d.fetch = (url, init) => {
+    d.calls.push({ url, headers: init.headers });
+    if (stopped) return Promise.reject(new Error("worker stopped"));
+    if (served === 3) return new Promise((_, reject) => stall.push(reject));
+    served++;
+    return Promise.resolve(ok(url));
+  };
+  const cut = U.refresh(d, {});
+  while (!stall.length) await new Promise((r) => setTimeout(r, 5));
+  const st = await d.getState();
+  assert(Object.keys(st.lists || {}).length === 3, "3 finished lists saved as they landed: " + Object.keys(st.lists || {}));
+  assert(!st.lastRunAt, "lastRunAt is written only when the downloads are done");
+  // The next worker start sees the saved state: not throttled, refetches only what is still due.
+  const next = fakeDeps({ responses: ok });
+  await next.setState(st);
+  next.t = d.t + 60 * 1000;
+  const r = await U.refresh(next, {});
+  assert(r.ok && r.ran && !next.staticOn, JSON.stringify(r));
+  const names = U.SOURCES.map((s) => s.name);
+  assert(next.calls.length === names.length - 3, "only the 6 missing lists fetched, got " + next.calls.length);
+  assert((await next.getState()).lastRunAt === next.t, "lastRunAt set on completion");
+  // Let the abandoned run finish so its abort timers are cleared.
+  stopped = true;
+  stall.forEach((reject) => reject(new Error("worker stopped")));
+  await cut;
+});
+
+Deno.test("a failed state save (storage quota) still swaps in the lists just downloaded and says so", async () => {
+  const d = fakeDeps({ responses: ok });
+  const realSet = d.setState;
+  d.setState = async (p) => {
+    if (p.lists) throw new Error("QUOTA_BYTES quota exceeded");
+    return realSet(p);
+  };
+  const r = await U.refresh(d, {});
+  assert(r.ok && !d.staticOn && /quota/.test(r.saveError || ""), JSON.stringify(r));
+  const domains = new Set(d.dynamic.flatMap((x) => x.condition.requestDomains || []));
+  // big() names every downloaded domain <tag><n>.example.com; none are in the packed bundle.
+  assert([...domains].some((x) => /^[a-z]+0\.example\.com$/.test(x)), "rules built from the downloaded lists, not the (unsaved) stored ones");
+  assert(!(await d.getState()).lists, "nothing claimed saved");
+});

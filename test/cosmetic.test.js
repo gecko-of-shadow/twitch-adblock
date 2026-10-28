@@ -159,7 +159,7 @@ Deno.test("playback files are untouched by cosmetic branch", () => {
   assert(!source.includes("chrome.declarativeNetRequest"), "cosmetic path is not DNR");
 });
 
-Deno.test("top frame answers the popup's pageOrigin question; subframes and stream sites stay quiet", () => {
+Deno.test("top frame answers the popup's pageOrigin question; subframes and stream sites don't", () => {
   const listen = (opts) => {
     const local = {};
     installCosmeticHide(local);
@@ -179,6 +179,34 @@ Deno.test("top frame answers the popup's pageOrigin question; subframes and stre
   let other = "untouched";
   top({ type: "something-else" }, {}, (r) => { other = r; });
   assertEquals(other, "untouched", "other messages are ignored");
-  assertEquals(listen({ hostname: "ads.example.com", href: "https://ads.example.com/", isTop: false }), null, "subframes don't answer");
+  const sub = listen({ hostname: "ads.example.com", href: "https://ads.example.com/", isTop: false });
+  let subReply = "none";
+  sub({ type: "pageOrigin" }, {}, (r) => { subReply = r; });
+  assertEquals(subReply, "none", "subframes listen (for generalSync) but don't answer pageOrigin");
   assertEquals(listen({ hostname: "www.twitch.tv", href: "https://www.twitch.tv/", isTop: true }), null, "stream sites don't answer");
+});
+
+Deno.test("pages re-read storage on the popup's generalSync message, in every frame, and never watch storage", async () => {
+  for (const isTop of [true, false]) {
+    const local = {};
+    installCosmeticHide(local);
+    let handler = null;
+    let reads = 0;
+    let watched = false;
+    local.start({
+      hostname: "news.example", href: "https://news.example/", isTop,
+      getLocal: (_keys, cb) => { reads++; cb({}); },
+      fetch: () => Promise.resolve({ ok: false }),
+      onChanged: { addListener() { watched = true; } },
+      onMessage: { addListener(fn) { handler = fn; } },
+    });
+    assertEquals(reads, 1, "initial read");
+    assert(!watched, "no storage.onChanged listener (a list refresh would copy MBs into every frame)");
+    assert(handler, "message listener in " + (isTop ? "top frame" : "subframe"));
+    handler({ type: "generalSync" }, {}, () => {});
+    assertEquals(reads, 2, "generalSync re-reads storage");
+    handler({ type: "other" }, {}, () => {});
+    assertEquals(reads, 2, "other messages ignored");
+  }
+  assert(!source.includes("storage.onChanged"), "cosmetic.js has no storage watch");
 });

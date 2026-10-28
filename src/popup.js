@@ -205,9 +205,29 @@
     });
   }
 
+  // Content scripts don't watch storage (a list refresh would copy megabytes
+  // into every frame), so tell open pages to re-read their hide rules.
+  // Tabs without the cosmetic script just don't answer.
+  function syncOpenPages() {
+    try {
+      chrome.tabs.query({}, (tabs) => {
+        void chrome.runtime.lastError;
+        for (const tab of tabs || []) {
+          if (typeof tab.id !== "number") continue;
+          chrome.tabs.sendMessage(tab.id, { type: "generalSync" }, () => {
+            void chrome.runtime.lastError;
+          });
+        }
+      });
+    } catch {
+      // Pages pick the change up on their next load.
+    }
+  }
+
   generalEnabled.addEventListener("change", async () => {
     const on = generalEnabled.checked === true;
     await savePartial({ [KEYS.enabled]: on });
+    syncOpenPages();
     renderGeneral();
     const res = await notifyBackground("applyGeneralState");
     if (res && res.error) {
@@ -225,6 +245,7 @@
     if (idx >= 0) allowed.splice(idx, 1);
     else allowed.push(origin);
     await savePartial({ [KEYS.allowedOrigins]: allowed });
+    syncOpenPages();
     renderGeneral();
     await notifyBackground("applyGeneralState");
   });
@@ -238,6 +259,7 @@
       [KEYS.listStatus]: "Checking filter lists…",
     });
     const res = await notifyBackground("updateLists", { requestedAt: now });
+    syncOpenPages();
     await loadSettings();
     if (res && res.ok) {
       listsStatus.textContent = formatListStatus(settings);
@@ -248,10 +270,11 @@
     renderGeneral();
   });
 
+  // Opening the popup changes nothing, so it doesn't ask the worker to
+  // re-apply rules (that re-read the whole list state, ~6 MB, every open).
   (async function init() {
     await queryActiveTab();
     await loadSettings();
     renderGeneral();
-    await notifyBackground("applyGeneralState");
   })();
 })();

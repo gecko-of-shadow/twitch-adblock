@@ -15,7 +15,9 @@ function installGeneralAdblockUpdate(target) {
   const LIST_RULE_ID_BASE = 100000;
   const KEPT_RULE_ID_BASE = 800000; // copies of bundled allow / extra rules
   const ALLOW_RULE_ID_BASE = 900000; // user "Allow this page" rules (untouched)
-  const FETCH_TIMEOUT_MS = 90000;
+  // Chrome stops an extension service worker whose fetch response takes more
+  // than 30s, so give up on a mirror before that.
+  const FETCH_TIMEOUT_MS = 25000;
 
   // Primary URL first, then mirrors of the same list (tried in order).
   const SOURCES = [
@@ -200,9 +202,20 @@ function installGeneralAdblockUpdate(target) {
     }
     const now = deps.now();
     if (!shouldRun(state, now, manual)) return { ok: true, ran: false, reason: "throttled" };
+    // lastRunAt is written only once the downloads are done, and each list is
+    // saved as it lands: if the worker is stopped part way, the next start
+    // retries and fetches only the lists that are still due.
+    const lists = Object.assign({}, state.lists || {});
+    let saveError = "";
+    const saveLists = async () => {
+      try {
+        await deps.setState({ lists });
+      } catch (e) {
+        saveError = String(e && e.message || e);
+      }
+    };
+    const withSave = (result) => (saveError ? Object.assign(result, { saveError }) : result);
     try {
-      await deps.setState({ lastRunAt: now });
-      const lists = Object.assign({}, state.lists || {});
       let changed = !state.dynamicActive;
       let cosmeticChanged = false;
       const errors = {};
@@ -242,6 +255,7 @@ function installGeneralAdblockUpdate(target) {
           if (tried.length) mirrorNotes[src.name] = tried.join("; ") + " (used " + new URL(usedUrl).hostname + ")";
           if (res.status === 304 && meta && Array.isArray(meta.domains)) {
             lists[src.name] = Object.assign({}, meta, { fetchedAt: now });
+            await saveLists();
             continue;
           }
           if (!res.ok) throw new Error("HTTP " + res.status);
@@ -263,6 +277,7 @@ function installGeneralAdblockUpdate(target) {
             cosmeticChanged = true;
           }
           changed = true;
+          await saveLists();
         } catch (e) {
           // One list failing never sinks the others: keep its cached copy (if
           // any) and remember why, so the popup can show it.
@@ -271,9 +286,13 @@ function installGeneralAdblockUpdate(target) {
       }
       const usable = SOURCES.filter((x) => lists[x.name] && Array.isArray(lists[x.name].domains));
       if (!usable.length) throw new Error(Object.values(errors).join("; ") || "no lists");
-      await deps.setState({ lastErrors: errors, lastNotes: mirrorNotes, lastErrorAt: Object.keys(errors).length ? now : 0 });
-
-      await deps.setState({ lists });
+      try {
+        await deps.setState({ lists, lastRunAt: now, lastErrors: errors, lastNotes: mirrorNotes, lastErrorAt: Object.keys(errors).length ? now : 0 });
+        saveError = "";
+      } catch (e) {
+        // Storage full or failing: carry on with the lists in memory.
+        saveError = String(e && e.message || e);
+      }
       // Write the hide list only when every cosmetic source has a parsed copy:
       // EasyPrivacy alone would replace the whole EasyList sheet with a couple
       // of selectors, and the bundled sheet is never restored over a refresh.
@@ -287,21 +306,23 @@ function installGeneralAdblockUpdate(target) {
           // Cosmetic stays on the previous rules (or the bundled sheet).
         }
       }
-      if (!changed) return { ok: true, ran: true, reason: "unchanged" };
-      if (!deps.enabled()) return { ok: true, ran: true, reason: "lists off; cached" };
+      if (!changed) return withSave({ ok: true, ran: true, reason: "unchanged" });
+      if (!deps.enabled()) return withSave({ ok: true, ran: true, reason: "lists off; cached" });
     } catch (e) {
       // Download/parse failed: whatever is active now (a previous good swap
       // or the bundled ruleset) stays. Make sure something is active.
       if (!(await dynamicLooksActive(deps, state))) await fallback(deps);
       try {
-        await deps.setState({ lastErrors: { all: String(e && e.message || e) }, lastErrorAt: now });
+        await deps.setState({ lastErrors: { all: String(e && e.message || e) }, lastErrorAt: now, lastRunAt: now });
       } catch {
         // silent
       }
       return { ok: false, ran: true, reason: String(e && e.message || e) };
     }
     try {
-      return await swap(deps, (await deps.getState()).lists, now);
+      // The lists in memory, not a re-read: a failed save must not swap in
+      // the previous (or no) lists.
+      return withSave(await swap(deps, lists, now));
     } catch (e) {
       await fallback(deps);
       const reason = "rules swap: " + String(e && e.message || e);
@@ -425,7 +446,7 @@ function installGeneralAdblockUpdate(target) {
   }
 
   Object.assign(target, {
-    POLICY, STARTUP_DELAY_MS, MIN_INTERVAL_MS, DOMAINS_PER_RULE, MAX_LIST_RULES,
+    POLICY, STARTUP_DELAY_MS, MIN_INTERVAL_MS, FETCH_TIMEOUT_MS, DOMAINS_PER_RULE, MAX_LIST_RULES,
     LIST_RULE_ID_BASE, KEPT_RULE_ID_BASE, ALLOW_RULE_ID_BASE, SOURCES, LIST_HOSTS,
     isNeverBlock, parseList, parseExpires, mergeDomains, buildListRules, keptBundledRules, keepsWholeDomain,
     shouldRun, listDue, refresh, describeError, LIST_ALLOW_RULE_ID, listAllowRule, applyEnabled, isListUrl,

@@ -106,6 +106,50 @@ REQUIRED=(
   icons/icon48-off.png
   icons/icon128-off.png
 )
+# Plus every file the manifest loads, the service worker's importScripts
+# (relative to the worker), and the popup page's scripts, so a new or renamed
+# runtime file can't go missing from a package unnoticed.
+MANIFEST_FILES="$(python3 - "$PKG" <<'PY'
+import json, pathlib, posixpath, re, sys
+root = pathlib.Path(sys.argv[1])
+try:
+    m = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+except Exception as e:
+    print("manifest.json")  # reported missing / unreadable below
+    sys.exit(0)
+out = []
+for cs in m.get("content_scripts") or []:
+    out += (cs.get("js") or []) + (cs.get("css") or [])
+for war in m.get("web_accessible_resources") or []:
+    out += [r for r in war.get("resources") or [] if "*" not in r]
+for rr in (m.get("declarative_net_request") or {}).get("rule_resources") or []:
+    out.append(rr.get("path"))
+action = m.get("action") or {}
+out += list((action.get("default_icon") or {}).values()) + list((m.get("icons") or {}).values())
+pages = [action.get("default_popup"), m.get("options_page")]
+sw = (m.get("background") or {}).get("service_worker")
+if sw:
+    out.append(sw)
+    p = root / sw
+    if p.is_file():
+        for call in re.findall(r"importScripts\(([^)]*)\)", p.read_text(encoding="utf-8", errors="replace")):
+            for name in re.findall(r"[\"']([^\"']+)[\"']", call):
+                out.append(posixpath.normpath(posixpath.join(posixpath.dirname(sw), name)))
+for page in filter(None, pages):
+    out.append(page)
+    p = root / page
+    if p.is_file():
+        for src in re.findall(r"<script[^>]*\bsrc=[\"']([^\"']+)[\"']", p.read_text(encoding="utf-8", errors="replace")):
+            out.append(posixpath.normpath(posixpath.join(posixpath.dirname(page), src)))
+for f in sorted(set(x.lstrip("/") for x in out if x)):
+    print(f)
+PY
+)"
+# tr: Windows python3 prints CRLF.
+mapfile -t _MANIFEST_REQUIRED < <(printf '%s\n' "$MANIFEST_FILES" | tr -d '\r')
+for f in "${_MANIFEST_REQUIRED[@]}"; do
+  [[ -n "$f" && " ${REQUIRED[*]} " != *" $f "* ]] && REQUIRED+=("$f")
+done
 # Shippable paths. Cosmetic hide, popup worker, list rules, and stream exclusion module.
 ALLOWED_RE='^(manifest\.json|src/popup\.html|src/popup\.js|src/general-exclude-hosts\.js|src/general-settings\.js|src/general-background\.js|src/general/(cosmetic|cosmetic-parse|exclusions|toggles|update)\.js|src/vendor/video-swap-new\.user\.js|src/vendor/LICENSE-TwitchAdSolutions|src/vendor/README\.md|src/vendor/ubo-youtube(-isolated)?\.js|src/vendor/ubo-youtube\.css|src/vendor/ubo-youtube-meta\.json|src/vendor/LICENSE-uBlock\.md|src/vendor/LICENSE-uBlock-GPLv3\.txt|src/rules/ubo-youtube-network\.json|src/youtube\.js|src/kick\.js|src/rules/general-network\.json|src/rules/CREDIT-EasyList\.txt|src/rules/LICENSES\.md|src/rules/README\.md|src/rules/meta\.json|src/rules/dnr-merge-meta\.json|src/rules/cosmetic-sample\.json|src/rules/cosmetic-rules\.json|src/cosmetic\.js|src/cosmetic\.css|src/cosmetic-hide\.css|src/youtube-ads\.css|src/twitch-directory-ads\.js|src/LICENSE-EasyList\.txt|icons/icon(16|48|128)(-working|-off)?\.png)$'
 

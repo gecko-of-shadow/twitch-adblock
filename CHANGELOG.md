@@ -7,6 +7,13 @@
 - If EasyList fails to download on a refresh, the hide list is left as it was. Before, EasyPrivacy alone replaced it (a couple of selectors instead of about 13,600) and it stayed that way until EasyList came back.
 - New test: fails 30 days before the bundled uBO YouTube `videoplayback` rule starts blocking normal videos (2027-01-15). Re-run `scripts/sync-ubo-youtube.mjs` before then.
 - README: the test command needs `--allow-read --allow-run --allow-env`.
+- List refresh: if Chrome stops the background worker part way through a refresh, the next worker start tries again (at most 3 starts per browser session). Each list is saved as soon as it downloads, so the retry fetches only the rest. A list download now gives up after 25s instead of 90s, under Chrome's 30s limit for a fetch in a background worker. Before, a cut-off refresh lost every download and waited for the next browser session.
+- List refresh: if the refreshed lists can't be saved (for example, storage is full), the lists just downloaded are still used and the popup says they weren't saved. Before, a failed save went unnoticed and the refresh used the previous or packed lists instead.
+- Ordinary sites: pages no longer watch extension storage. A list refresh writes several MB there, and Chrome copied every change into every frame of every open page. The popup now tells open tabs to re-read after the switch, "Allow this page" or Update. New hide rules from the quiet background refresh apply from the next page load.
+- Ordinary sites: the hide-rule summary every frame reads (`cosMeta`) no longer carries the names of all ~8,000 hide-rule keys (about 185 KB per frame). They moved to `cosKeys`, which only the background worker reads. Existing installs are converted on the next update.
+- Opening the popup no longer asks the background worker to re-apply the rules. That re-read the whole saved list state (about 6 MB) and rewrote rules on every open, though nothing had changed.
+- Twitch browse pages: the ad-card watcher only looks at newly added page parts and does its work at most once per frame. It no longer searches the whole page three times on every change (including every chat line on channel pages). The banner and "Advertisement" boxes were already hidden by the injected style.
+- Release check: the required-file list now also includes every file `manifest.json` loads, the background worker's `importScripts` files and the popup's scripts. Before, a missing `src/general/update.js` passed the check and the background worker would not start.
 
 ## 0.2.21
 

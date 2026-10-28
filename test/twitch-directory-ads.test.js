@@ -95,3 +95,66 @@ Deno.test("directory page: a feedback button with no card boundary never hides t
   api.hideDirectoryAds(html);
   for (const el of [html, body, root, tiles]) assert(!el.hidden, `${el.tagName} must stay visible`);
 });
+
+Deno.test("directory watcher: CSS alone hides the banner and Advertisement boxes; mutations only queue feedback buttons, once per frame", () => {
+  const watch = new Function(`${source}\nreturn watchDirectoryAds;`)();
+  assert(api.CSS.startsWith('[data-a-target="browse-banner-ad-slot"],[aria-label="Advertisement"],'), "both hidden by the injected style");
+  const FEEDBACK = api.FEEDBACK_SELECTOR;
+  function el(tag, children = [], attrs = {}) {
+    const e = { nodeType: 1, tagName: tag, attrs, children, parentElement: null, isConnected: true, hidden: false, id: "",
+      style: { setProperty(k, v) { if (k === "display" && v === "none") e.hidden = true; } },
+      matches(s) { return s === FEEDBACK && tag === "BUTTON"; },
+      querySelector(s) { return this.querySelectorAll(s)[0] || null; },
+      querySelectorAll(s) {
+        const out = [];
+        for (const c of this.children) {
+          if ((s === FEEDBACK && c.tagName === "BUTTON") || (s === "video" && c.tagName === "VIDEO") ||
+            (s === '[data-a-target="preview-card-image-link"]' && c.attrs.preview)) out.push(c);
+          out.push(...c.querySelectorAll(s));
+        }
+        return out;
+      } };
+    for (const c of children) c.parentElement = e;
+    return e;
+  }
+  const frames = [];
+  const raf = (fn) => frames.push(fn);
+  const style = { isConnected: true };
+  const doc = { documentElement: { appendChild(s) { s.isConnected = true; } } };
+  let looks = 0;
+  const spy = Object.assign({}, api, { hideCardOf: (b) => { looks++; return api.hideCardOf(b); } });
+  const onMutations = watch(spy, doc, style, raf);
+
+  // Chat churn: many batches, no feedback buttons -> one frame queued, no card lookups.
+  for (let i = 0; i < 50; i++) onMutations([{ addedNodes: [el("DIV", [el("SPAN")])] }]);
+  assertEquals(frames.length, 1, "coalesced to one frame");
+  frames.shift()();
+  assertEquals(looks, 0, "no card lookups for chat lines");
+
+  // A grid Ad card lands: its card is hidden on the next frame, and only once.
+  const button = el("BUTTON");
+  const adCard = el("DIV", [el("DIV", [button])]);
+  const grid = el("DIV", [adCard, el("DIV", [el("A", [], { preview: true })]), el("DIV", [el("A", [], { preview: true })])]);
+  onMutations([{ addedNodes: [grid] }]);
+  frames.shift()();
+  assert(adCard.hidden && looks === 1, "card hidden after one look");
+  onMutations([{ addedNodes: [el("DIV")] }]);
+  frames.shift()();
+  assertEquals(looks, 1, "a handled button is not looked at again");
+
+  // A button whose grid isn't there yet is retried on later frames, then dropped.
+  looks = 0;
+  const early = el("BUTTON");
+  const lonely = el("DIV", [el("DIV", [early])]);
+  el("DIV", [lonely]);
+  onMutations([{ addedNodes: [lonely] }]);
+  for (let i = 0; i < 15; i++) { frames.shift()(); onMutations([{ addedNodes: [el("DIV")] }]); }
+  frames.shift()();
+  assertEquals(looks, 10, "retried up to 10 looks");
+
+  // The hide style is put back if the page drops it.
+  style.isConnected = false;
+  onMutations([{ addedNodes: [el("DIV")] }]);
+  frames.shift()();
+  assert(style.isConnected, "style re-attached");
+});

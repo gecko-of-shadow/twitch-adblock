@@ -188,13 +188,20 @@ function listDeps() {
         resolve((s && s[LIST_STATE_KEY]) || {});
       });
     }),
-    setState: (patch) => new Promise((resolve) => {
+    // Rejects when the write fails (e.g. storage quota) so the refresh can
+    // tell; it then keeps working from the lists it holds in memory.
+    setState: (patch) => new Promise((resolve, reject) => {
       chrome.storage.local.get([LIST_STATE_KEY], (s) => {
-        void chrome.runtime.lastError;
+        const readErr = chrome.runtime.lastError;
+        if (readErr) {
+          reject(new Error(readErr.message || String(readErr)));
+          return;
+        }
         const next = Object.assign({}, (s && s[LIST_STATE_KEY]) || {}, patch);
         chrome.storage.local.set({ [LIST_STATE_KEY]: next }, () => {
-          void chrome.runtime.lastError;
-          resolve();
+          const err = chrome.runtime.lastError;
+          if (err) reject(new Error(err.message || String(err)));
+          else resolve();
         });
       });
     }),
@@ -236,15 +243,18 @@ async function writeCosmetic(data, meta) {
   }
   const merged = CP.mergeCosmetic([data, { generic: bundledExtras }]);
   const items = CP.toStorage(merged, meta);
-  const old = await new Promise((resolve) => chrome.storage.local.get([CP.KEY_META], (s) => {
+  // Older versions kept the key list inside cosMeta.
+  const old = await new Promise((resolve) => chrome.storage.local.get([CP.KEY_KEYS, CP.KEY_META], (s) => {
     void chrome.runtime.lastError;
-    resolve((s && s[CP.KEY_META] && s[CP.KEY_META].keys) || []);
+    resolve((s && s[CP.KEY_KEYS]) || (s && s[CP.KEY_META] && s[CP.KEY_META].keys) || []);
   }));
   const metaItem = items[CP.KEY_META];
+  const keyList = items[CP.KEY_KEYS];
   delete items[CP.KEY_META];
+  delete items[CP.KEY_KEYS];
   await cb((done) => chrome.storage.local.set(items, done));
-  await cb((done) => chrome.storage.local.set({ [CP.KEY_META]: metaItem }, done));
-  const keep = new Set(metaItem.keys);
+  await cb((done) => chrome.storage.local.set({ [CP.KEY_KEYS]: keyList, [CP.KEY_META]: metaItem }, done));
+  const keep = new Set(keyList);
   const stale = old.filter((k) => !keep.has(k));
   if (stale.length) await cb((done) => chrome.storage.local.remove(stale, done));
 }
@@ -258,6 +268,12 @@ async function ensureCosmetic() {
       void chrome.runtime.lastError;
       resolve(s && s[CP.KEY_META]);
     }));
+    if (meta && Array.isArray(meta.keys)) {
+      // Every frame reads cosMeta; move the ~8k-name key list out of it.
+      const slim = Object.assign({}, meta);
+      delete slim.keys;
+      await cb((done) => chrome.storage.local.set({ [CP.KEY_KEYS]: meta.keys, [CP.KEY_META]: slim }, done));
+    }
     if (meta && (meta.source === "refresh" || meta.packedAt === bundled.packed_at_utc)) return;
     bundledExtras = bundled.extras || [];
     await writeCosmetic(bundled, { source: "bundled", packedAt: bundled.packed_at_utc });
@@ -288,7 +304,8 @@ async function refreshLists(manual) {
     if (notes.length) console.log("twitch-adblock: list mirrors used:", notes);
     if (errs.length || !result.ok) console.warn("twitch-adblock: list refresh problems:", errs.length ? errs : result.reason);
     else console.log("twitch-adblock: list refresh", result);
-    const errText = errs.length ? " Problems: " + errs.join("; ") + "." : (!result.ok && result.reason ? " Problem: " + result.reason + "." : "");
+    const errText = (errs.length ? " Problems: " + errs.join("; ") + "." : (!result.ok && result.reason ? " Problem: " + result.reason + "." : ""))
+      + (result.saveError ? " Lists could not be saved (" + result.saveError + "); they will download again next time." : "");
     const status = (state.dynamicActive
       ? "Lists updated " + when + " (" + (state.domainCount || 0) + " domains)."
       : "Using packed lists" + (result.ok ? "." : " (refresh failed; will retry later).")) + errText;
@@ -313,7 +330,11 @@ async function updateLists() {
   return { ok: !!result.ok, result };
 }
 
-// One quiet refresh per browser session, ~5s after the worker starts.
+// One quiet refresh per browser session, ~5s after the worker starts. Chrome
+// can stop the worker part way through; the next worker start then tries
+// again (at most STARTUP_REFRESH_TRIES starts per session, so a refresh that
+// keeps dying does not re-download on every wake).
+const STARTUP_REFRESH_TRIES = 3;
 function scheduleStartupRefresh() {
   setTimeout(() => {
     const session = chrome.storage && chrome.storage.session;
@@ -321,12 +342,17 @@ function scheduleStartupRefresh() {
       refreshLists(false);
       return;
     }
-    session.get(["listRefreshStarted"], (s) => {
+    session.get(["listRefreshDone", "listRefreshTries"], (s) => {
       void chrome.runtime.lastError;
-      if (s && s.listRefreshStarted) return;
-      session.set({ listRefreshStarted: true }, () => {
+      const tries = (s && s.listRefreshTries) || 0;
+      if ((s && s.listRefreshDone) || tries >= STARTUP_REFRESH_TRIES) return;
+      session.set({ listRefreshTries: tries + 1 }, () => {
         void chrome.runtime.lastError;
-        refreshLists(false);
+        refreshLists(false).then(() => {
+          session.set({ listRefreshDone: true }, () => {
+            void chrome.runtime.lastError;
+          });
+        });
       });
     });
   }, GU.STARTUP_DELAY_MS);
