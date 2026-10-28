@@ -49,15 +49,18 @@ Deno.test("update policy is startup refresh + manual, list hosts only", () => {
 Deno.test("only the background worker fetches lists, and only list hosts", () => {
   assert(backgroundSource.includes("GU.isListUrl(url)"), "worker fetch is gated to list hosts");
   assert(!backgroundSource.includes("setInterval"), "no polling");
-  assert(!backgroundSource.includes("chrome.alarms"), "no alarms");
+  // One alarm only: a one-shot retry for a startup refresh Chrome cut off.
+  assert(!/periodInMinutes/.test(backgroundSource), "no repeating alarms");
+  const creates = backgroundSource.match(/chrome\.alarms\.create\([^)]*\)/g) || [];
+  assert(creates.length === 1 && creates[0].includes("RETRY_ALARM") && /delayInMinutes/.test(creates[0]), "only the one-shot retry alarm: " + creates);
 });
 
-Deno.test("manifest has no background worker for list fetching", () => {
+Deno.test("manifest: one worker; alarms only for the refresh retry, unlimitedStorage for the list cache", () => {
   const worker = (manifest.background || {}).service_worker;
   assertEquals(worker, "src/general-background.js", "only the icon and switch worker");
   const perms = manifest.permissions || [];
-  assert(!perms.includes("alarms"), "no alarms permission");
-  assert(!perms.includes("unlimitedStorage"), "no unlimitedStorage for list caches");
+  // Neither shows an install warning. The list state is ~7 MB, near the 10 MB storage.local quota.
+  assert(perms.includes("alarms") && perms.includes("unlimitedStorage"), JSON.stringify(perms));
 });
 
 Deno.test("packaged scripts do not auto-fetch filter lists", () => {

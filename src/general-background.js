@@ -331,34 +331,83 @@ async function updateLists() {
 }
 
 // One quiet refresh per browser session, ~5s after the worker starts. Chrome
-// can stop the worker part way through; the next worker start then tries
-// again (at most STARTUP_REFRESH_TRIES starts per session, so a refresh that
-// keeps dying does not re-download on every wake).
+// can stop the worker part way through, so each try also sets a one-shot
+// alarm that wakes the worker to try again; a finished refresh clears it.
+// At most STARTUP_REFRESH_TRIES tries per session, so a refresh that keeps
+// dying does not re-download on every wake. One-shot only: lists are never
+// polled on a timer.
 const STARTUP_REFRESH_TRIES = 3;
-function scheduleStartupRefresh() {
-  setTimeout(() => {
-    const session = chrome.storage && chrome.storage.session;
-    if (!session) {
-      refreshLists(false);
+const RETRY_ALARM = "listRefreshRetry";
+const RETRY_DELAY_MINUTES = 2;
+let startupCheck = false;
+
+function armRetry() {
+  if (!chrome.alarms) return;
+  try {
+    chrome.alarms.create(RETRY_ALARM, { delayInMinutes: RETRY_DELAY_MINUTES });
+  } catch {
+    // The next worker start retries instead.
+  }
+}
+
+function clearRetry() {
+  if (!chrome.alarms) return;
+  try {
+    chrome.alarms.clear(RETRY_ALARM, () => {
+      void chrome.runtime.lastError;
+    });
+  } catch {
+    // An alarm that fires after a finished refresh finds listRefreshDone.
+  }
+}
+
+function startupRefresh() {
+  // A refresh already running in this worker: check again later.
+  if (refreshing) {
+    armRetry();
+    return;
+  }
+  if (startupCheck) return;
+  const session = chrome.storage && chrome.storage.session;
+  if (!session) {
+    refreshLists(false);
+    return;
+  }
+  startupCheck = true;
+  session.get(["listRefreshDone", "listRefreshTries"], (s) => {
+    void chrome.runtime.lastError;
+    const tries = (s && s.listRefreshTries) || 0;
+    if ((s && s.listRefreshDone) || tries >= STARTUP_REFRESH_TRIES) {
+      startupCheck = false;
+      clearRetry();
       return;
     }
-    session.get(["listRefreshDone", "listRefreshTries"], (s) => {
+    session.set({ listRefreshTries: tries + 1 }, () => {
       void chrome.runtime.lastError;
-      const tries = (s && s.listRefreshTries) || 0;
-      if ((s && s.listRefreshDone) || tries >= STARTUP_REFRESH_TRIES) return;
-      session.set({ listRefreshTries: tries + 1 }, () => {
-        void chrome.runtime.lastError;
-        refreshLists(false).then(() => {
-          session.set({ listRefreshDone: true }, () => {
-            void chrome.runtime.lastError;
-          });
+      armRetry();
+      const run = refreshLists(false);
+      startupCheck = false;
+      run.then(() => {
+        clearRetry();
+        session.set({ listRefreshDone: true }, () => {
+          void chrome.runtime.lastError;
         });
       });
     });
-  }, GU.STARTUP_DELAY_MS);
+  });
+}
+
+function scheduleStartupRefresh() {
+  setTimeout(startupRefresh, GU.STARTUP_DELAY_MS);
 }
 
 scheduleStartupRefresh();
+
+if (chrome.alarms && chrome.alarms.onAlarm) {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm && alarm.name === RETRY_ALARM) startupRefresh();
+  });
+}
 
 chrome.runtime.onInstalled.addListener(() => {
   ensureCosmetic();

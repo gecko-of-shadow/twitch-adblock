@@ -22,7 +22,7 @@ Deno.test("general popup defaults on and never auto-fetches lists", () => {
   assert(popupSource.includes("generalEnabled: true") || popupSource.includes("generalEnabled: true,"), "storage default ON");
   assert(popupSource.includes("updateLists") || popupHtml.includes("Update lists"), "manual Update control");
   assert(!popupSource.includes("chrome.alarms"), "no alarms in popup");
-  assert(!backgroundSource.includes("chrome.alarms"), "no alarms in background");
+  assert(!/periodInMinutes/.test(backgroundSource), "no repeating alarms in background");
   assert(!backgroundSource.includes("setInterval"), "no interval polling for lists");
   assert(backgroundSource.includes("manual"), "update path is manual");
 });

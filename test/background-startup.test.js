@@ -7,9 +7,10 @@ function assert(c, l) { if (!c) throw new Error(l); }
 const EXT = "abcdefghijklmnopabcdefghijklmnop";
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
-function loadWorker({ store = {}, session = {}, listFetch }) {
+function loadWorker({ store = {}, session = {}, listFetch, alarms }) {
   let startTimer = null;
   let onInstalled = null;
+  let onAlarm = null;
   const listener = () => ({ addListener() {} });
   const chrome = {
     runtime: {
@@ -37,6 +38,14 @@ function loadWorker({ store = {}, session = {}, listFetch }) {
     },
     action: { setIcon(_o, cb) { if (cb) cb(); }, setTitle() {} },
   };
+  // Alarms outlive the worker (Chrome keeps them), so the test passes one map in.
+  if (alarms) {
+    chrome.alarms = {
+      create(name, info) { alarms[name] = info; },
+      clear(name, cb) { delete alarms[name]; if (cb) cb(true); },
+      onAlarm: { addListener(f) { onAlarm = f; } },
+    };
+  }
   const importScripts = (...names) => {
     for (const n of names) (0, eval)(Deno.readTextFileSync(new URL("../src/" + n, import.meta.url)));
   };
@@ -47,7 +56,7 @@ function loadWorker({ store = {}, session = {}, listFetch }) {
   };
   const fakeSetTimeout = (fn) => { startTimer = fn; return 0; };
   new Function("chrome", "importScripts", "setTimeout", "fetch", backgroundSource)(chrome, importScripts, fakeSetTimeout, fetch);
-  return { store, session, start: () => startTimer && startTimer(), installed: () => onInstalled && onInstalled({}) };
+  return { store, session, start: () => startTimer && startTimer(), installed: () => onInstalled && onInstalled({}), fire: (name) => onAlarm && onAlarm({ name }) };
 }
 
 Deno.test("a startup refresh cut off part way is retried on the next worker start, at most 3 starts per session", async () => {
@@ -123,4 +132,38 @@ Deno.test("an already-current install only has its cosMeta slimmed", async () =>
   assert(JSON.stringify(store.cosKeys) === '["cosG","cosS:a.example"]', JSON.stringify(store.cosKeys));
   assert(JSON.stringify(store.cosMeta) === '{"source":"refresh","updatedAt":1}', JSON.stringify(store.cosMeta));
   assert(store.cosG === ".x" && store["cosS:a.example"][0] === ".y", "refreshed rules untouched");
+});
+
+Deno.test("each startup try sets a one-shot retry alarm; the alarm wakes a new worker that retries; finishing clears it", async () => {
+  const session = {};
+  const alarms = {};
+  const store = { generalEnabled: true, generalAllowedOrigins: [] };
+  const hung = [];
+  let stopped = false;
+  let calls = 0;
+  const listFetch = () => {
+    calls++;
+    if (stopped) return Promise.reject(new TypeError("Failed to fetch"));
+    return new Promise((_, reject) => hung.push(reject));
+  };
+  loadWorker({ store, session, listFetch, alarms }).start();
+  await tick(300);
+  assert(alarms.listRefreshRetry && alarms.listRefreshRetry.delayInMinutes > 0 && !("periodInMinutes" in alarms.listRefreshRetry),
+    "one-shot retry alarm set: " + JSON.stringify(alarms));
+  // Chrome stopped that worker. The alarm wakes a fresh one, before its own 5s startup timer.
+  const before = calls;
+  const w2 = loadWorker({ store, session, listFetch, alarms });
+  w2.fire("listRefreshRetry");
+  await tick(300);
+  assert(calls === before + 1 && session.listRefreshTries === 2, "alarm started try 2: " + JSON.stringify(session));
+  w2.fire("something-else");
+  await tick(50);
+  assert(calls === before + 1, "other alarms ignored");
+  // This time the downloads finish (they fail fast): done, alarm cleared.
+  stopped = true;
+  hung.splice(0).forEach((reject) => reject(new TypeError("Failed to fetch")));
+  for (let i = 0; i < 100 && !session.listRefreshDone; i++) await tick(20);
+  assert(session.listRefreshDone === true, JSON.stringify(session));
+  await tick(1500);
+  assert(!alarms.listRefreshRetry, "retry alarm cleared once a refresh finishes: " + JSON.stringify(alarms));
 });

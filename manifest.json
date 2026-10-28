@@ -5,7 +5,9 @@
   "description": "Blocks video ads on Twitch (TwitchAdSolutions video-swap-new, unmodified), YouTube, and Kick, plus general-site ad blocking.",
   "permissions": [
     "storage",
-    "declarativeNetRequest"
+    "declarativeNetRequest",
+    "unlimitedStorage",
+    "alarms"
   ],
   "host_permissions": [
     "https://easylist.to/*",
