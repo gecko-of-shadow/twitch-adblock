@@ -1,12 +1,19 @@
+<div align="center">
+
 # 🦎 twitch-adblock
 
-<p align="center"><img src="docs/gecko-avatar.jpg" width="168" alt="Green gecko holding a blue shield with a white prohibition symbol"></p>
+<img src="docs/gecko-avatar.jpg" width="168" alt="Green gecko holding a blue shield with a white prohibition symbol">
 
-**A Chrome extension (Manifest V3, version 0.2.21) that blocks ads on Twitch, YouTube, Kick, and other websites.** It works inside Chrome: no separate program, no account.
+**A Chrome extension (Manifest V3, version 0.2.21) that blocks ads on Twitch, YouTube, Kick, and other websites.**<br>
+It works inside Chrome: no separate program, no account.
 
-<p align="center"><img src="icons/icon48-working.png" width="48" height="48" alt="Toolbar icon while ordinary-site blocking is on: green gecko with an amber glowing eye"> &nbsp; <img src="icons/icon48-off.png" width="48" height="48" alt="Toolbar icon while ordinary-site blocking is off: grey gecko with a half-shut eye"></p>
+<img src="icons/icon48-working.png" width="48" height="48" alt="Toolbar icon while ordinary-site blocking is on: green gecko with an amber glowing eye"> &nbsp; <img src="icons/icon48-off.png" width="48" height="48" alt="Toolbar icon while ordinary-site blocking is off: grey gecko with a half-shut eye">
 
-The toolbar gecko is green with an amber glowing eye while blocking on ordinary sites is on, and grey with a half-shut eye when it is off. Twitch, YouTube, and Kick filters keep running either way.
+<sub>The toolbar gecko is green with an amber glowing eye while blocking on ordinary sites is on, and grey with a half-shut eye when it is off. Twitch, YouTube, and Kick filters keep running either way.</sub>
+
+[Install](#install) · [How to use](#how-to-use) · [Privacy](#privacy) · [Troubleshooting](#troubleshooting) · [Docs](#links)
+
+</div>
 
 ## What it does and doesn't do
 
@@ -62,8 +69,13 @@ Full details, permissions, and the list sites: [docs/permissions-and-privacy.md]
 - **Credits and licenses:** TwitchAdSolutions (MIT), uBlock Origin and uAssets (GPLv3), the EasyList authors and the other lists. [Details and license files](docs/credits.md)
 - **Development:** there is no build step. From a git clone, load the repository root (the directory that contains `manifest.json`); `docs/`, `test/`, and `scripts/` are not part of the running extension. The version is the `version` field in `manifest.json`. The release zip root is `manifest.json`, `src/`, and `icons/`, and `scripts/pack-zip.sh` writes `twitch-adblock-<version>.zip` containing the same three.
 
+<details>
+<summary>Development commands</summary>
+
 ```bash
 deno test --no-lock --allow-read --allow-run --allow-env test/
 bash scripts/release-gate.sh
 bash scripts/pack-zip.sh
 ```
+
+</details>
