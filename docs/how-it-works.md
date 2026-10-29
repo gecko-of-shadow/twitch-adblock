@@ -22,7 +22,7 @@ Covers `youtube.com`, `www.youtube.com`, and `m.youtube.com`, top frame only.
 - **Player ads.** uBlock Origin’s YouTube scriptlets (`src/vendor/ubo-youtube.js` and the isolated script) and `src/vendor/ubo-youtube.css`, from uBlock Origin 1.75.0, prune ads in player responses. While that layer is present, `src/youtube.js` does not strip player fields itself and does not run its DOM sweep.
 - **Feed and toasts.** `src/youtube-ads.css` always hides sponsored feed cards and the “Experiencing interruptions?” toast. The toast is hidden in place. Saved and clipboard toasts stay.
 - **Sponsors in the video.** Nothing in these files edits the video file, so a sponsorship that is part of the video still plays.
-- **Not covered.** YouTube Music, `youtube-nocookie.com`, and YouTube Kids are outside these content scripts.
+- **Other YouTube sites.** YouTube Music, `youtube-nocookie.com`, and YouTube Kids are outside these content scripts.
 
 ## Kick
 
@@ -34,7 +34,7 @@ Covers `kick.com` and subdomains.
 
 ## Other websites
 
-Covers all other http and https sites. The README and the popup call these "ordinary sites".
+Covers other http and https sites. The README and the popup call these "ordinary sites".
 
 - `declarativeNetRequest` blocks domains from the packed lists, and `src/cosmetic.js` hides leftover ad boxes.
 - The packed snapshot in `src/rules/meta.json` is 211,995 domains.

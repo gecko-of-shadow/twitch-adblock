@@ -42,23 +42,23 @@ An allow counts for the whole website address and stays until you undo it. Detai
 
 - No tracking: it does not send your browsing history anywhere.
 - No account, and no analytics call of its own. Settings stay in Chrome's storage on this browser.
-- It downloads nine public filter lists (EasyList, EasyPrivacy, AdGuard Base, and others) from the [list sites](docs/permissions-and-privacy.md#host-permissions), over HTTPS without cookies. Those sites see the list address and your IP address, not the page you are on.
+- It downloads nine public filter lists (EasyList, EasyPrivacy, AdGuard Base, and others) from the [list sites](docs/permissions-and-privacy.md#host-permissions), over HTTPS without cookies. Those sites see the list address and your IP address. The page you are visiting is not part of that address.
 - On Twitch, it asks Twitch for ad-free copies of the stream. Those requests go to Twitch.
 
 Full details, permissions, and the list sites: [docs/permissions-and-privacy.md](docs/permissions-and-privacy.md)
 
 ## Troubleshooting
 
-- **"Allow this page" is grey?** The line under it says why:
+- **"Allow this page" is grey?** The line under it says why. Common reasons:
   - *Turn general blocking on to change page allows.* Turn on the **Block ads on ordinary sites** switch first.
   - *Open a normal http(s) page to allow it. Already on one? Reload it.* Allowing does not work on Twitch, YouTube, Kick, or Chrome pages. On a normal website, the page was open before you installed or reloaded the extension: reload it, then open the window again.
 - **Blocked things still missing after you allow a site?** Reload the page.
-- **Loading a new copy?** Remove the old one at `chrome://extensions` first. A copy from a different folder forgets the allowed sites, so allow them again.
+- **Loading a new copy?** Remove the old one first. Removing the extension, or loading a copy from a different folder, forgets the allowed sites, so allow them again.
 
 ## Links
 
 - **Docs:** [How it works](docs/how-it-works.md) · [Allow a page](docs/allow-a-page.md) · [Permissions and privacy](docs/permissions-and-privacy.md)
-- **Permissions:** `storage` and `declarativeNetRequest`, plus download access to nine filter-list sites. [Full list](docs/permissions-and-privacy.md#permissions)
+- **Permissions:** `storage` and `declarativeNetRequest`, plus host permissions, all for downloading public filter lists. [Full list](docs/permissions-and-privacy.md#permissions)
 - **Credits and licenses:** TwitchAdSolutions (MIT), uBlock Origin and uAssets (GPLv3), the EasyList authors and the other lists. [Details and license files](docs/credits.md)
 - **Development:** there is no build step. From a git clone, load the repository root (the directory that contains `manifest.json`); `docs/`, `test/`, and `scripts/` are not part of the running extension. The version is the `version` field in `manifest.json`. The release zip root is `manifest.json`, `src/`, and `icons/`, and `scripts/pack-zip.sh` writes `twitch-adblock-<version>.zip` containing the same three.
 
