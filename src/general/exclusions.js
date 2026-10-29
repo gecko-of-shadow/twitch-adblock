@@ -11,8 +11,8 @@ function installGeneralAdblockExclusions(target) {
   ];
 
   // Request hosts used by those players (embeds on other pages still play).
-  // Twitch/YouTube family from release-gate allowlist; Kick IVS from the Kick
-  // beta (amazon-ivs worker → live-video.net).
+  // Twitch/YouTube family from the release-gate allowlist. Kick's amazon-ivs
+  // worker host is live-video.net.
   const VIDEO_SUFFIXES = [
     "ttvnw.net",
     "jtvnw.net",
@@ -102,12 +102,10 @@ function installGeneralAdblockExclusions(target) {
     return isExcludedHost(hostFromUrl(url));
   }
 
-  // initiatorDomains for a high-priority DNR allow rule (site tabs).
   function dnrExcludedInitiatorDomains() {
     return SITE_DOMAINS.slice();
   }
 
-  // requestDomains for allowing player media even from non-excluded pages.
   function dnrExcludedRequestDomains() {
     return VIDEO_DOMAINS.concat(SITE_DOMAINS).filter(function (domain, index, all) {
       return all.indexOf(domain) === index;

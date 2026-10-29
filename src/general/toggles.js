@@ -85,8 +85,7 @@ function installGeneralAdblockToggles(target) {
     return next;
   }
 
-  // General list+cosmetic apply only when master is on and the page is not allowed.
-  // Excluded stream hosts are handled separately by exclusions / cosmetic skip.
+  // Stream hosts are skipped by exclusions / cosmetic, not by this flag.
   function generalBlockingApplies(state, origin) {
     const current = copyState(state);
     if (!current.enabled) return false;

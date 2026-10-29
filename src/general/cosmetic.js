@@ -1,5 +1,4 @@
-// Cosmetic (hide leftover boxes) gate. Never inject on hard-excluded hosts.
-// Depends on exclusions + toggles install APIs (injected or pre-installed).
+// Never inject on hard-excluded hosts.
 function installGeneralAdblockCosmetic(target, exclusions, toggles) {
   const excl = exclusions || (typeof globalThis !== "undefined" && globalThis.GeneralAdblockExclusions) || {};
   const toggleApi = toggles || (typeof globalThis !== "undefined" && globalThis.GeneralAdblockToggles) || {};
@@ -25,7 +24,6 @@ function installGeneralAdblockCosmetic(target, exclusions, toggles) {
     }
   }
 
-  // True only when general cosmetic may touch the page.
   function shouldApplyCosmetic(pageUrlOrHost, state) {
     const host = hostOf(pageUrlOrHost);
     if (typeof excl.isExcludedHost === "function" && excl.isExcludedHost(host)) {

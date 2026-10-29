@@ -1,11 +1,9 @@
-// Runs on YouTube at document_start. Ads are removed from the player
-// response so the same video keeps playing. Home-feed Sponsored cards
-// are stripped from browse JSON and hidden with CSS. Nothing here
-// replaces the picture with a blank frame. A SABR next-request policy
-// can still hold that player on a black loading spinner for the ad-length
-// backoff (often 10 seconds) after a click. The same wait is in the first
-// /initplayback response and in the start-buffer policy. Both are cleared
-// below, and player requests ask YouTube not to schedule the slot.
+// YouTube document_start script. The uBO bundle loads first and owns
+// player-response pruning, decoy blocking, and the 105-byte wait reload.
+// Nothing here replaces the picture with a blank frame. SABR backoff
+// zeroing, start-buffer clears, and the no-ad request flag stay off
+// unless localStorage["twitch-adblock-yt-opts"] turns them on. Backoff
+// zeroing made the player busy-poll videoplayback and starts slower.
 function uboLayerPresent() {
   try {
     return globalThis[Symbol.for("twitch-adblock.ubo")] === true;
@@ -495,7 +493,6 @@ function installYoutubeAdblock(target) {
       const back = to ? badGvHosts.get(to) : null;
       badGvHosts.set(from, { to: back && back.to === from ? "" : to, at: Date.now() });
     } catch {
-      // Ignore a URL that does not parse.
     }
   }
 
@@ -630,7 +627,6 @@ function installYoutubeAdblock(target) {
         candidates = candidates.slice(1).concat([first]);
       }
     } catch {
-      // keep order
     }
     const failures = [];
     let lastResponse = null;
@@ -1016,7 +1012,6 @@ function startYoutubeAdblock() {
     const saved = JSON.parse(localStorage.getItem("twitch-adblock-yt-opts") || "{}");
     for (const key of Object.keys(OPTS)) if (typeof saved[key] === typeof OPTS[key]) OPTS[key] = saved[key];
   } catch {
-    // Defaults stay.
   }
 
 
@@ -1030,13 +1025,12 @@ function startYoutubeAdblock() {
     try {
       console.log("twitch-adblock: [+" + (Date.now() - navAt) + "ms] " + msg);
     } catch {
-      // Logging is optional.
     }
   }
 
   const api = {};
   installYoutubeAdblock(api);
-  // SABR backoff zeroing stays off: on Bran's PC (2026-10-16, 5e24b4f) it made
+  // SABR backoff zeroing stays off: on the owner's PC (2026-10-16, 5e24b4f) it made
   // the player busy-poll videoplayback and starts got slower (5-9s). The wait
   // is server-side; see the get_watch adPlacements rule in the uBO layer.
   // Opt in with {"umpBackoff":true}.
@@ -1059,7 +1053,7 @@ function startYoutubeAdblock() {
   cloaked.set(toStringProxy, baseToString);
   // uBO layer present: it owns pruning, decoys (DNR) and the 105-byte wait
   // reload (rpnt). Our fetch/XHR/JSON.parse hooks on top of it cost ~2-3s per
-  // start (Bran's PC 2026-10-16: uBO-only 0.8-2.2s vs 3.7-4.5s with hooks), so
+  // start (the owner's PC 2026-10-16: uBO-only 0.8-2.2s vs 3.7-4.5s with hooks), so
   // they stay out unless {"hooksUnderUbo":true}.
   const HOOKS = !uboLayerPresent() || OPTS.hooksUnderUbo === true;
   let hooksStoodDown = false;
@@ -1324,7 +1318,6 @@ function startYoutubeAdblock() {
       if (typeof player.getCurrentTime === "function" && player.getCurrentTime() > 0.1) return true;
       if (typeof player.getPlayerState === "function" && player.getPlayerState() === 1) return true;
     } catch {
-      // optional
     }
     return false;
   }
@@ -1371,7 +1364,6 @@ function startYoutubeAdblock() {
     }
     if (!player || !video) return again();
     if (startedVideoId && currentVideoId(player) === startedVideoId) return stopStall();
-    // Healthy or already moving: stop watching this video.
     if (playerMoving(player, video)) return stopStall();
     const sig = stallSignature(video);
     if (sig !== stallLastSig || lastMediaEventAt > stallLastProgressAt) {
@@ -1385,7 +1377,6 @@ function startYoutubeAdblock() {
       try {
         if (typeof player.getPlayerState === "function" && player.getPlayerState() === 2) hold = true;
       } catch {
-        // State is optional.
       }
     }
     // A host fallback is still being tried: let it finish unless all hosts failed.
@@ -1459,7 +1450,7 @@ function startYoutubeAdblock() {
 
   function armStall(minMs, why) {
     // uBO layer: rpnt's own reload handles the wait; our 10s reload made full
-    // loads ~10-11s vs uBO-only 5.3s (Bran's PC, 8b4ba14). {"stallUnderUbo":true} re-enables.
+    // loads ~10-11s vs uBO-only 5.3s (the owner's PC, 8b4ba14). {"stallUnderUbo":true} re-enables.
     // "gentle" (default): one reload, only after OPTS.stallGentleMs with zero
     // progress, never while a SABR wait reply (104/105-byte UMP) is recent.
     if (api.UBO_LAYER && OPTS.stallUnderUbo !== true && (OPTS.stallUnderUbo !== "gentle" || stalledReloaded >= 1)) return;
@@ -1554,7 +1545,6 @@ function startYoutubeAdblock() {
         console.log("twitch-adblock: media recovered on " + new URL(result.url).hostname + " in " + result.ms + "ms");
       }
     } catch {
-      // Logging is optional.
     }
   }
 
@@ -1569,7 +1559,6 @@ function startYoutubeAdblock() {
       const ms = Date.now() - navAt;
       console.log("twitch-adblock: YouTube playback started " + ms + "ms after navigation" + (strippedThisVideo ? " (ads stripped)" : ""));
     } catch {
-      // Timing is optional.
     }
   }, true);
 
@@ -1585,7 +1574,6 @@ function startYoutubeAdblock() {
         if (api.isDecoyStreamUrl(src)) onDecoyUrl(src, "video element got a decoy stream url (expire=" + new URL(src).searchParams.get("expire") + ")");
         else if (type === "error") onDecoyUrl(src, "video element failed on its stream url");
       } catch {
-        // optional
       }
     }, true);
   }

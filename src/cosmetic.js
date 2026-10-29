@@ -1,15 +1,12 @@
-// Cosmetic element-hide for leftover ad boxes on ordinary sites.
-// Never runs on Twitch / YouTube family / Kick (manifest exclude_matches + host check).
-// Master switch: chrome.storage.local.generalEnabled (default ON; shared with popup/DNR).
 function installCosmeticHide(api) {
   const STYLE_ID = "twitch-adblock-cosmetic-hide";
-  // Same key as popup src/general-settings.js — do not rename without coordinating.
   const STORAGE_KEY = "generalEnabled";
   const ALLOWED_ORIGINS_KEY = "generalAllowedOrigins";
   const CSS_PATH = "src/cosmetic-hide.css";
 
-  // Hostname suffixes hard-excluded from general cosmetic hide.
-  // Keep in sync with manifest exclude_matches and popup HARD_EXCLUDE_HOST_RE.
+  // Not a copy of manifest exclude_matches or HARD_EXCLUDE_HOST_RE.
+  // ttvnw.net, jtvnw.net, and any host containing "twitchcdn" are excluded
+  // here even though the content script is still injected on them.
   const EXCLUDED_HOST_SUFFIXES = [
     "twitch.tv",
     "ttvnw.net",
@@ -35,7 +32,6 @@ function installCosmeticHide(api) {
     return false;
   }
 
-  // Phase 0 decision 6: default ON for every site except the stream excludes.
   function isEnabled(value) {
     return value !== false;
   }
@@ -44,7 +40,6 @@ function installCosmeticHide(api) {
     try {
       if (href) return new URL(href).origin;
     } catch {
-      // fall through
     }
     const host = String(hostname || "").toLowerCase();
     if (!host) return "";
@@ -72,7 +67,7 @@ function installCosmeticHide(api) {
       const existing = document.getElementById(STYLE_ID);
       if (existing) existing.remove();
     } catch {
-      // document may be unavailable in unit tests.
+      // document can already be gone.
     }
   }
 
@@ -135,7 +130,6 @@ function installCosmeticHide(api) {
         injectStyle(P.buildPageCss(hostname, view));
         return Promise.resolve(true);
       } catch {
-        // fall back to the bundled sheet below
       }
     }
     return loadCss(fetcher).then((text) => {
@@ -148,7 +142,6 @@ function installCosmeticHide(api) {
     });
   }
 
-  // Back-compat name used by early tests / callers.
   function applyEnabled(enabled, fetcher) {
     return applyState(enabled, fetcher);
   }

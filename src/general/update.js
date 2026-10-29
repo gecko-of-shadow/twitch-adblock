@@ -17,7 +17,6 @@ function installGeneralAdblockUpdate(target) {
   const ALLOW_RULE_ID_BASE = 900000; // user "Allow this page" rules (untouched)
   const FETCH_TIMEOUT_MS = 90000;
 
-  // Primary URL first, then mirrors of the same list (tried in order).
   const SOURCES = [
     { name: "peter_lowe", url: "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=adblockplus&showintro=0&mimetype=plaintext", minDomains: 1000, mirrors: [] },
     { name: "urlhaus_hosts", url: "https://malware-filter.gitlab.io/malware-filter/urlhaus-filter-hosts-online.txt", mirrors: [], maxDomains: 8000, minDomains: 50 },
@@ -38,8 +37,7 @@ function installGeneralAdblockUpdate(target) {
     { name: "adguard_base", url: "https://filters.adtidy.org/extension/ublock/filters/2_without_easylist.txt", minDomains: 1000, mirrors: [] },
   ];
   const LIST_HOSTS = ["pgl.yoyo.org", "malware-filter.gitlab.io", "easylist.to", "ublockorigin.github.io", "easylist-downloads.adblockplus.org", "secure.fanboy.co.nz", "raw.githubusercontent.com", "filters.adtidy.org"];
-  // Dynamic allow rule so no block rule (ours or a stale one) can stop the
-  // extension's own list downloads. Outside the list and user-allow id ranges.
+  // So a block rule cannot stop this extension's own list downloads.
   const LIST_ALLOW_RULE_ID = 990001;
   function listAllowRule(extensionId) {
     return {
@@ -85,7 +83,6 @@ function installGeneralAdblockUpdate(target) {
     return d.split(".").every(Boolean);
   }
 
-  // Same rules as scripts/pack-filter-lists.py extract_domains().
   function parseList(text) {
     const out = [];
     for (const raw of String(text || "").split(/\r?\n/)) {
@@ -296,7 +293,6 @@ function installGeneralAdblockUpdate(target) {
       try {
         await deps.setState({ lastErrors: { all: String(e && e.message || e) }, lastErrorAt: now });
       } catch {
-        // silent
       }
       return { ok: false, ran: true, reason: String(e && e.message || e) };
     }
@@ -309,7 +305,6 @@ function installGeneralAdblockUpdate(target) {
         const st = (await deps.getState()) || {};
         await deps.setState({ lastErrors: Object.assign({}, st.lastErrors, { swap: reason }), lastErrorAt: now });
       } catch {
-        // silent
       }
       return { ok: false, ran: true, reason };
     }
@@ -320,7 +315,6 @@ function installGeneralAdblockUpdate(target) {
     try {
       host = new URL(src.url).hostname;
     } catch {
-      // keep name
     }
     const name = e && e.name;
     const msg = String(e && e.message || e || "error");
@@ -357,7 +351,6 @@ function installGeneralAdblockUpdate(target) {
       for (const d of packed) if (!seen.has(d) && !isNeverBlock(d)) { seen.add(d); domains.push(d); }
       domains = domains.slice(0, MAX_LIST_RULES * DOMAINS_PER_RULE);
     }
-    // Sanity: a refreshed set much smaller than the bundle is a bad download.
     if (domains.length < bundledDomains * 0.5) throw new Error("refreshed list too small");
     const addRules = buildListRules(domains).concat(keptBundledRules(bundled.rules, bundled.extraIds));
     const existing = (await deps.getDynamicRules()) || [];
@@ -374,17 +367,14 @@ function installGeneralAdblockUpdate(target) {
       const removeRuleIds = existing.filter((r) => isOurRule(r.id)).map((r) => r.id);
       if (removeRuleIds.length) await deps.updateDynamicRules({ removeRuleIds, addRules: [] });
     } catch {
-      // keep going
     }
     try {
       if (deps.enabled()) await deps.setStaticEnabled(true);
       await deps.setState({ dynamicActive: false });
     } catch {
-      // silent
     }
   }
 
-  // Lists switched on/off: on uses the dynamic set if active, else the bundle.
   async function applyEnabled(deps, enabled) {
     let state = {};
     try {

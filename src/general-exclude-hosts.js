@@ -1,13 +1,12 @@
 // Hard-exclude hosts for the general list-based ad blocker (Chrome DNR).
 // Twitch / YouTube / Kick playback files are never edited by this feature.
-// Domains only ΓÇö no scheme-prefixed URLs here (keeps release-gate outbound checks clean).
+// Domains only; no scheme-prefixed URLs (release-gate treats a scheme as an outbound URL).
 //
-// Lean coexistence: a few high-priority allow / allowAllRequests rules beat
-// thousands of EasyList blocks *inside this extension*. Another extension's
-// block can still win across extensions; see docs conflict research.
+// A few high-priority allow / allowAllRequests rules beat EasyList blocks
+// inside this extension. Another extension's block can still win.
 
 function installGeneralExcludeHosts(target) {
-  // Page / frame hosts. Apex entries cover subdomains in DNR (www, m, music, ΓÇª).
+  // Page / frame hosts. Apex entries cover subdomains in DNR (www, m, music, ...).
   const SITE_DOMAINS = Object.freeze([
     "twitch.tv",
     "youtube.com",
@@ -63,8 +62,8 @@ function installGeneralExcludeHosts(target) {
     return SITE_DOMAINS.some((domain) => hostMatchesDomain(h, domain));
   }
 
-  // Few DNR rules, high priority ΓÇö stays lean vs the ~30k static floor.
-  // Within this extension, allow / allowAllRequests outrank same-extension blocks.
+  // Few rules, high priority, under the ~30k static floor.
+  // Inside this extension, allow / allowAllRequests outrank same-extension blocks.
   function buildDnrExclusionRules(options) {
     const opts = options || {};
     const idStart = opts.idStart == null ? 1 : opts.idStart;

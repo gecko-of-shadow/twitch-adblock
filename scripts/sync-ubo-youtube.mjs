@@ -259,7 +259,6 @@ js += "\n// <<<< end of private namespace\n})();\n";
 await Deno.writeTextFile(ROOT + (world === "MAIN" ? "src/vendor/ubo-youtube.js" : "src/vendor/ubo-youtube-isolated.js"), js);
 }
 
-// ---- cosmetic ----
 const cssRules = new Map();
 for (const h of HOSTS) for (const sel of perHost[h].css) if (!perHost[h].cssEx.has(sel)) cssRules.set(sel, true);
 const css = banner.replace(/^\/\/ (.*)$/gm, "/* $1 */") + Array.from(cssRules.keys()).map((s) => `${s} { display: none !important; }`).join("\n") + "\n";

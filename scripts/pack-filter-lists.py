@@ -252,7 +252,7 @@ def extract_domains(text: str) -> list[str]:
         if not line or line.startswith("!"):
             continue
         if line.startswith("@@"):
-            continue  # exceptions handled later by DNR allow rules / user allow
+            continue  # not packed; this packer only emits whole-domain blocks
         if "#$" in line or "##" in line or "#@#" in line:
             continue
         m = DOMAIN_RE.match(line)

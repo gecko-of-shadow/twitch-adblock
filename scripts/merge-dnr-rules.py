@@ -2,7 +2,8 @@
 """Merge stream-exclusion allows + list-pack block rules into general-network.json.
 
 Uses the same domain lists as src/general-exclude-hosts.js (buildDnrExclusionRules).
-Renumbers list-pack block ids so they never collide with exclusion ids 1–2.
+List-pack block ids start at 100 so they do not collide with exclusion ids 1-3
+or the YouTube doubleclick block (id 4).
 Does not edit playback files.
 """
 from __future__ import annotations
@@ -21,7 +22,6 @@ LIST_BLOCKS = (
     else ROOT / "scripts" / ".dnr-cache" / "general-network.blocks.json"
 )
 
-# Keep in sync with src/general-exclude-hosts.js
 SITE_DOMAINS = [
     "twitch.tv",
     "youtube.com",
